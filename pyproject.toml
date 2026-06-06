@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "icarus-framework"
+version = "1.0.0"
+description = "Modular intelligence framework for structured data analysis"
+readme = "README.md"
+license = {text = "PolyForm-Noncommercial-1.0.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Indegosblade"},
+]
+keywords = ["intelligence", "analysis", "sqlite", "diffing", "security", "firmware"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+]
+
+[project.urls]
+Homepage = "https://github.com/Indegosblade/icarus-framework"
+Repository = "https://github.com/Indegosblade/icarus-framework"
+Issues = "https://github.com/Indegosblade/icarus-framework/issues"
+
+[project.scripts]
+icarus = "icarus.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["icarus*"]
