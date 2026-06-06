@@ -1,0 +1,51 @@
+# Databases (contain extracted data, too large for git)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Extracted sources (processed locally)
+rootfs/
+extracted/
+*.dmg
+*.ipsw
+*.aea
+*.img
+*.wim
+
+# Reports (generated)
+reports/
+output/
+
+# Checkpoints (pipeline resume state)
+.*_checkpoint.db
+
+# Sensitive
+*.pem
+*.key
+.env
