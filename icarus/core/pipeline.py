@@ -8,6 +8,8 @@ saving progress at each checkpoint. Crash at phase N? Resume from phase N.
 import json
 import sqlite3
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -32,6 +34,8 @@ class PipelineContext:
         self.phase_times = {}
         self.stats = {}
         self.errors = []
+        self.version_id: Optional[int] = None
+        self.run_id: str = str(uuid.uuid4())
 
     @property
     def elapsed(self):
@@ -90,6 +94,31 @@ class Pipeline:
         conn.commit()
         conn.close()
 
+    def _create_version_record(self):
+        """Record this pipeline run in the versions table."""
+        if not self.output.exists():
+            return
+        try:
+            conn = sqlite3.connect(str(self.output))
+            conn.execute("""
+                INSERT OR IGNORE INTO versions (run_id, parser_name, source_path, started_at)
+                VALUES (?, ?, ?, ?)
+            """, (
+                self.context.run_id,
+                self.parser_name,
+                str(self.source),
+                datetime.now(timezone.utc).isoformat(),
+            ))
+            row = conn.execute(
+                "SELECT id FROM versions WHERE run_id = ?", (self.context.run_id,)
+            ).fetchone()
+            if row:
+                self.context.version_id = row[0]
+            conn.commit()
+            conn.close()
+        except sqlite3.OperationalError:
+            pass  # versions table may not exist yet (pre-init phase)
+
     def run(self, resume: bool = True, start_phase: Optional[int] = None):
         """
         Execute the pipeline.
@@ -100,6 +129,8 @@ class Pipeline:
         """
         last_complete = self.get_last_checkpoint() if resume else -1
         start = start_phase if start_phase is not None else (last_complete + 1)
+
+        self._create_version_record()
 
         print(f"[ICARUS] Pipeline: {len(self.phases)} phases, "
               f"source={self.source}, output={self.output}")
