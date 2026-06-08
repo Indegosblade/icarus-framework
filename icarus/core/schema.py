@@ -247,12 +247,7 @@ SELECT
 FROM daemons d
 JOIN binaries b ON d.binary_id = b.id
 JOIN entitlements e ON e.binary_id = b.id
-WHERE e.key IN (
-    'com.apple.private.security.no-sandbox',
-    'com.apple.private.skip-library-validation',
-    'task_for_pid-allow',
-    'platform-application'
-)
+WHERE (d.sandbox_profile IS NULL OR d.sandbox_profile = '')
 AND d.mach_services IS NOT NULL
 GROUP BY d.id;
 

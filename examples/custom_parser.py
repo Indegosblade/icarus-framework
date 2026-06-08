@@ -89,7 +89,7 @@ class LinuxParser(BaseParser):
                         """, (file_row[0], path.name))
                         stats["binaries"] += 1
 
-        # Phase 3: Parse systemd units (equivalent of LaunchDaemons)
+        # Phase 3: Parse systemd service units
         systemd_dir = source / "lib" / "systemd" / "system"
         if systemd_dir.exists():
             for unit in systemd_dir.glob("*.service"):

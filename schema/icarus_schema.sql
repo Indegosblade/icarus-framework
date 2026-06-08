@@ -1,4 +1,4 @@
--- ICARUS Database Schema
+-- ICARUS Database Schema (v3)
 -- Modular intelligence framework for structured data analysis
 -- SQLite 3.35+ required (FTS5 support)
 
@@ -15,7 +15,22 @@ CREATE TABLE IF NOT EXISTS metadata (
 );
 
 -- ============================================================
--- Core Entity Tables
+-- Provenance: Pipeline Run Tracking
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE,
+    parser_name TEXT NOT NULL,
+    source_path TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    entity_count INTEGER DEFAULT 0,
+    metadata TEXT
+);
+
+-- ============================================================
+-- Core Entity Tables (all carry provenance columns)
 -- ============================================================
 
 CREATE TABLE IF NOT EXISTS files (
@@ -31,7 +46,11 @@ CREATE TABLE IF NOT EXISTS files (
     sha256 TEXT,
     file_type TEXT,
     is_symlink INTEGER DEFAULT 0,
-    symlink_target TEXT
+    symlink_target TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS binaries (
@@ -49,7 +68,11 @@ CREATE TABLE IF NOT EXISTS binaries (
     segments TEXT,
     has_restrict INTEGER DEFAULT 0,
     has_pie INTEGER DEFAULT 1,
-    is_encrypted INTEGER DEFAULT 0
+    is_encrypted INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS daemons (
@@ -66,7 +89,11 @@ CREATE TABLE IF NOT EXISTS daemons (
     mach_services TEXT,
     binary_id INTEGER REFERENCES binaries(id),
     is_disabled INTEGER DEFAULT 0,
-    session_type TEXT
+    session_type TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS entitlements (
@@ -74,7 +101,11 @@ CREATE TABLE IF NOT EXISTS entitlements (
     binary_id INTEGER NOT NULL REFERENCES binaries(id),
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    value_type TEXT
+    value_type TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS sandbox_profiles (
@@ -84,7 +115,11 @@ CREATE TABLE IF NOT EXISTS sandbox_profiles (
     raw_sbpl TEXT,
     rule_count INTEGER DEFAULT 0,
     allows_network INTEGER DEFAULT 0,
-    allows_mach_lookup INTEGER DEFAULT 0
+    allows_mach_lookup INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS sandbox_rules (
@@ -94,7 +129,11 @@ CREATE TABLE IF NOT EXISTS sandbox_rules (
     action TEXT NOT NULL,
     filter_type TEXT,
     filter_value TEXT,
-    requires TEXT
+    requires TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS kexts (
@@ -106,7 +145,11 @@ CREATE TABLE IF NOT EXISTS kexts (
     dependencies TEXT,
     personalities TEXT,
     iokit_classes TEXT,
-    has_user_client INTEGER DEFAULT 0
+    has_user_client INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS frameworks (
@@ -117,7 +160,11 @@ CREATE TABLE IF NOT EXISTS frameworks (
     version TEXT,
     is_private INTEGER DEFAULT 0,
     binary_id INTEGER REFERENCES binaries(id),
-    exported_symbols_count INTEGER DEFAULT 0
+    exported_symbols_count INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 -- ============================================================
@@ -167,12 +214,7 @@ SELECT
 FROM daemons d
 JOIN binaries b ON d.binary_id = b.id
 JOIN entitlements e ON e.binary_id = b.id
-WHERE e.key IN (
-    'com.apple.private.security.no-sandbox',
-    'com.apple.private.skip-library-validation',
-    'task_for_pid-allow',
-    'platform-application'
-)
+WHERE (d.sandbox_profile IS NULL OR d.sandbox_profile = '')
 AND d.mach_services IS NOT NULL
 GROUP BY d.id;
 
@@ -226,15 +268,3 @@ CREATE TRIGGER IF NOT EXISTS daemons_au AFTER UPDATE ON daemons BEGIN
     INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
     VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
 END;
-
--- ============================================================
--- Cross-Version Support
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    version_string TEXT NOT NULL,
-    build_number TEXT,
-    source_description TEXT,
-    processed_at TEXT DEFAULT (datetime('now'))
-);

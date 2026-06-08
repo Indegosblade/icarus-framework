@@ -23,7 +23,7 @@ class BaseParser(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier for this parser (e.g., 'ios', 'android', 'linux')."""
+        """Short identifier for this parser (e.g., 'windows', 'linux', 'android')."""
         ...
 
     @property
@@ -94,7 +94,7 @@ class BaseParser(ABC):
         """
         Return list of external tools this parser requires.
 
-        Override to declare dependencies (e.g., ['ipsw', 'ldid'] for iOS).
+        Override to declare dependencies (e.g., ['readelf'] for Linux).
         The pipeline checks availability before starting.
         """
         return []
