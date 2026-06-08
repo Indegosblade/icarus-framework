@@ -10,6 +10,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from icarus.parsers.windows import WindowsParser
+    PARSERS["windows"] = WindowsParser
+except ImportError:
+    pass
+
 
 def get_parser(name: str) -> BaseParser:
     """Get a parser instance by name."""
