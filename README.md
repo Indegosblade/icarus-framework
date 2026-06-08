@@ -5,9 +5,7 @@
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat)
 ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange?style=flat)
 
-**Point it at data. It maps what's inside, how it connects, and what changed.**
-
-ICARUS extracts entities from structured data sources, resolves them into a queryable graph, diffs across versions, and sanitizes the output. One command in, one SQLite database out.
+ICARUS extracts entities from structured data sources, maps their relationships into a queryable SQLite database, diffs across versions, and sanitizes the output for sharing.
 
 ```
 Source directory --> Parser --> Entity graph --> SQLite database
@@ -17,8 +15,6 @@ Source directory --> Parser --> Entity graph --> SQLite database
                                   Differ          HYGEIA          STIX
                                (versions)     (sanitization)    (export)
 ```
-
-**2,099,505 entities extracted from a single machine. 24,822 PII findings caught and redacted. Zero residual. That's the v3 validation run.**
 
 ---
 
@@ -30,7 +26,7 @@ pip install git+https://github.com/Indegosblade/icarus-framework.git
 # Scan a directory — parser auto-detected
 icarus build --source /path/to/data --output intel.db
 
-# Query it
+# Query
 icarus query intel.db --search "nginx"
 icarus query intel.db --stats
 
@@ -46,24 +42,24 @@ icarus parser list
 
 ---
 
-## What It Does
+## Features
 
 ### Extract
 
-8 production parsers. Auto-detected from source contents via a registry contest — most specific parser wins.
+8 parsers, auto-detected from source contents. A registry contest picks the most specific match.
 
 | Parser | Specificity | What It Extracts |
 |--------|:-----------:|-----------------|
 | `cloud/aws/cloudtrail` | 5 | IAM identities, API events, error patterns |
 | `windows` | 20 | PE/DLL binaries, configs, frameworks, file metadata |
 | `linux` | 20 | ELF binaries, systemd services, shared libraries, capabilities |
-| `generic/json` | 100 | JSON file catalog + top-level key extraction |
+| `generic/json` | 100 | JSON file catalog with top-level key extraction |
 | `generic/xml` | 100 | XML file catalog |
-| `generic/sqlite` | 100 | SQLite file catalog + schema discovery |
-| `generic/archive` | 100 | Archive catalog (.zip/.tar/.gz) + contents listing |
-| `generic/binary` | 100 | Catch-all: any directory with files |
+| `generic/sqlite` | 100 | SQLite file catalog with schema discovery |
+| `generic/archive` | 100 | Archive catalog (.zip/.tar/.gz) with contents listing |
+| `generic/binary` | 100 | Catch-all for any directory |
 
-Lower specificity wins. CloudTrail at 5 beats Windows at 20 beats generic at 100. If no specific parser matches, a generic always catches it.
+Lower specificity wins. If no specific parser matches, a generic fallback catches it.
 
 ### Query
 
@@ -79,11 +75,11 @@ with IcarusQuery("intel.db") as q:
     q.privileged_entitlements() # Permission distribution across binaries
 ```
 
-6 pre-built intelligence views. Or write raw SQL — it's just SQLite.
+6 pre-built intelligence views, or write raw SQL against the database directly.
 
 ### Diff
 
-Run ICARUS on version N and version N+1. Diff them.
+Run ICARUS on version N and version N+1. Diff the databases.
 
 ```python
 from icarus.core.differ import IcarusDiffer
@@ -94,8 +90,8 @@ with IcarusDiffer("v1.db", "v2.db") as d:
     report = d.generate_report()      # Markdown
 ```
 
-| Category | What It Catches |
-|----------|----------------|
+| Category | Description |
+|----------|-------------|
 | ADDITION | Entity exists in new, not old |
 | DELETION | Entity exists in old, not new |
 | PROPERTY_CHANGE | Same entity, different attribute |
@@ -104,7 +100,7 @@ with IcarusDiffer("v1.db", "v2.db") as d:
 
 ### Resolve
 
-Same entity, different sources. ICARUS groups them.
+Entities from different sources may refer to the same thing under different identifiers. The resolver groups them.
 
 ```python
 from icarus.core.resolver import EntityResolver
@@ -117,17 +113,17 @@ with EntityResolver("intel.db") as r:
     r.resolve("daemon", blocking_keys=["name"])
 ```
 
-**Atoms** are immutable observations. **Bags** group atoms into resolved entities (merge/split with full reversibility). **Event log** records every decision. FTS5 blocking index generates candidates in linear time.
+**Atoms** are immutable observations. **Bags** group atoms into resolved entities. **Event log** records every resolution decision. FTS5 blocking index generates candidates without O(n^2) comparison.
 
 ### Sanitize
 
-[HYGEIA](https://github.com/Indegosblade/HYGEIA) strips PII before the database is marked complete. Usernames in paths, emails, credentials, device identifiers — caught and redacted.
+[HYGEIA](https://github.com/Indegosblade/HYGEIA) strips PII before the database is marked complete. Usernames, emails, credentials, device identifiers.
 
 ```python
 from icarus.integrations.hygeia import sanitize_output, verify_clean
 
-stats = sanitize_output(db_path)   # {'redacted': 24822, ...}
-result = verify_clean(db_path)     # {'passed': True, 'findings': 0}
+stats = sanitize_output(db_path)
+result = verify_clean(db_path)
 ```
 
 ### Export
@@ -137,44 +133,9 @@ STIX 2.1 interoperability. Entities map to SCOs/SDOs. Diffs map to note bundles.
 ```python
 from icarus.integrations.stix_export import export_to_stix, diff_to_stix
 
-export_to_stix(db_path, output_path)               # Full entity export
-diff_to_stix(old_db, new_db, output_path)           # Diff as STIX bundle
+export_to_stix(db_path, output_path)
+diff_to_stix(old_db, new_db, output_path)
 ```
-
-```bash
-icarus diff old.db new.db --stix changes.json
-```
-
----
-
-## Real-World Validation
-
-Every number below comes from a real run, not a benchmark.
-
-### v3.0.0 — Full Machine Scan
-
-| Metric | Value |
-|--------|------:|
-| Source | `C:\Users\Kevin` (full user profile) |
-| Files cataloged | **2,045,000** |
-| Binaries detected | **29,427** |
-| Frameworks | **25,078** |
-| **Total entities** | **2,099,505** |
-| Database size | **20.5 GB** |
-| PII findings (pre-sanitize) | 24,822 |
-| PII findings (post-sanitize) | **0** |
-| HYGEIA verdict | **PASS** |
-| Parser | Windows (auto-detected) |
-| Install | Fresh `pip install` from GitHub |
-
-### v2.0.0 — Multi-Source Validation
-
-| Dataset | Platform | Entities | Data | Binaries | PII | HYGEIA |
-|---------|----------|------:|-----:|---------:|:---:|:------:|
-| Full user profile | Windows | 116,002 | 244 GB | 399 PE | **0** | **PASS** |
-| Python 3.12 | Windows | 55,346 | 2,079 MB | 150 PE | **0** | **PASS** |
-| Chrome profile | Windows | 25,916 | 3,249 MB | 3 PE | **0** | **PASS** |
-| Ubuntu /usr | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | **0** | **PASS** |
 
 ---
 
@@ -183,7 +144,7 @@ Every number below comes from a real run, not a benchmark.
 15 normalized tables. 3 FTS indexes. 3 intelligence views. Schema v4.
 
 ```sql
--- Ontology: entities with cell-level provenance
+-- Ontology
 files, binaries, daemons, entitlements,
 sandbox_profiles, sandbox_rules, kexts, frameworks
 
@@ -191,38 +152,33 @@ sandbox_profiles, sandbox_rules, kexts, frameworks
 metadata, versions
 
 -- Events
-observations          -- temporal events against any entity
+observations
 
 -- Entity resolution
 atoms, bags, bag_atoms, resolution_event_log
 
--- Full-text search (auto-synced triggers)
+-- Full-text search (auto-synced via triggers)
 files_fts, daemons_fts, atoms_fts
 
 -- Intelligence views
 v_sandbox_escape_surface, v_kernel_attack_surface, v_test_binaries
 ```
 
-Every entity row carries provenance: `source_version_id`, `confidence` (0.0-1.0), `observed_time`, `marking` (UNCLASSIFIED/PII/SENSITIVE/REDACTED).
+Every entity row carries provenance: `source_version_id`, `confidence`, `observed_time`, `marking`.
 
 ---
 
 ## Parser Ecosystem
 
-Each parser ships with a YAML manifest validated by JSON Schema at load time. The manifest declares identity, quality tier, specificity, reliability grade (Admiralty A-F), and test configuration.
+Each parser ships with a YAML manifest validated by JSON Schema at load time. Manifests declare identity, quality tier, specificity, reliability grade, and test configuration.
 
 ```bash
-# Registry listing
 icarus parser list
-
-# Manifest validation
 icarus parser validate icarus/parsers/windows.yaml
-
-# Test harness: golden output, idempotency, schema conformance, zero-PII
 icarus parser test windows
 ```
 
-**Writing a new parser:**
+Writing a new parser:
 
 ```python
 from icarus.parsers.base import BaseParser
@@ -240,15 +196,15 @@ class MyParser(BaseParser):
         """Link entities together."""
 ```
 
-Add a YAML manifest, register it, and the full engine is behind it — pipeline, diffing, resolution, sanitization, STIX export, CLI.
+Add a YAML manifest, register it, and the full engine is available: pipeline, diffing, resolution, sanitization, STIX export, CLI.
 
-See [about/PARSERS.md](about/PARSERS.md) for the full development guide.
+See [about/PARSERS.md](about/PARSERS.md) for the development guide.
 
 ---
 
 ## Pipeline
 
-Streaming. Checkpoint/resume. Scales to millions of entities without loading the dataset into memory.
+Streaming extraction with checkpoint/resume. Crash at phase N, resume from phase N.
 
 ```python
 from icarus.core.pipeline import create_default_pipeline
@@ -258,17 +214,16 @@ p.run()                # Full run
 p.run(resume=True)     # Resume from last checkpoint
 ```
 
-| Property | Value |
-|----------|-------|
-| Memory | Streaming — never loads full dataset |
-| Storage | SQLite (single file, portable, zero infrastructure) |
-| Resume | Checkpoint per phase — crash at 6, resume at 6 |
+| Property | Detail |
+|----------|--------|
+| Memory | Streaming — processes records individually, never loads full dataset |
+| Storage | SQLite, single portable file |
+| Resume | Checkpoint per phase |
 | Search | FTS5 full-text with auto-sync triggers |
-| Traversal | `os.walk` with error callbacks — handles broken symlinks, permission errors, WSL artifacts |
-| Provenance | Auto-finalized version records with entity count + completion timestamp |
+| Traversal | `os.walk` with error callbacks for broken symlinks and permission errors |
 | Parsers | 8 production, auto-detected via registry contest |
-| Tests | 77 — schema, query, diff, pipeline, HYGEIA, parsers, resolution, observations, manifest, registry, harness, generics, CloudTrail, STIX |
-| CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows/macos), ruff, mypy, bandit |
+| Tests | 77 across 8 test modules |
+| CI | pytest (3.10/3.12/3.13 x ubuntu/windows/macos), ruff, mypy, bandit |
 
 ---
 
@@ -290,12 +245,7 @@ Development:
 pip install -e ".[dev]"
 ```
 
-**Dependencies:**
-- Python 3.10+
-- SQLite 3.35+ (FTS5)
-- [HYGEIA](https://github.com/Indegosblade/HYGEIA) (auto-installed)
-- [PyYAML](https://pyyaml.org/) >=6.0
-- [jsonschema](https://python-jsonschema.readthedocs.io/) >=4.20
+**Requirements:** Python 3.10+, SQLite 3.35+ (FTS5), [HYGEIA](https://github.com/Indegosblade/HYGEIA), PyYAML >=6.0, jsonschema >=4.20.
 
 ---
 
@@ -320,18 +270,18 @@ icarus-framework/
 |   |   |-- linux.py          # Linux parser (ELF/systemd)
 |   |   |-- cloud/            # Cloud parsers (cloudtrail.py)
 |   |   |-- generic/          # Fallback parsers (json, xml, sqlite, archive, binary)
-|   |   |-- catalog/          # Two-tier catalog (production + candidate JSON)
+|   |   |-- catalog/          # Two-tier catalog (production + candidate)
 |   |   +-- schema/           # Parser manifest JSON Schema
 |   +-- integrations/
 |       |-- hygeia.py         # HYGEIA sanitization layer
-|       +-- stix_export.py    # STIX 2.1 export (entities + diffs)
-|-- tests/                    # 77 tests
-|-- examples/                 # Custom parser template
-|-- schema/                   # Standalone SQL reference
-|-- about/                    # Architecture + parser development docs
-|-- wiki/                     # GitHub wiki source
-|-- .github/workflows/ci.yml  # CI matrix
-|-- LICENSE                   # PolyForm Noncommercial 1.0.0
+|       +-- stix_export.py    # STIX 2.1 export
+|-- tests/
+|-- examples/
+|-- schema/
+|-- about/
+|-- wiki/
+|-- .github/workflows/ci.yml
+|-- LICENSE
 +-- pyproject.toml
 ```
 
@@ -340,32 +290,26 @@ icarus-framework/
 ## Changelog
 
 ### v3.0.0
-- **Parser ecosystem** — YAML manifest format validated by JSON Schema, parser registry with most-specific-wins detection contest, two-tier catalog (production + candidate), parser test harness with 4 quality gates (golden output, idempotency, schema conformance, zero-PII)
-- **8 production parsers** — Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary. All manifested, registered, tested.
-- **CloudTrail parser** — maps IAM identities to daemons, API events to observations. Admiralty grade A, specificity 5.
-- **Generic fallback parsers** — 5 catch-all parsers at specificity 100. Any directory with files gets cataloged.
-- **STIX 2.1 export** — `export_to_stix()` and `diff_to_stix()`. CLI: `icarus diff old.db new.db --stix output.json`
-- **CLI: `icarus parser`** — `validate`, `list`, `test` subcommands
-- **2,099,505-entity validation** — full machine scan, 24,822 PII redactions, HYGEIA clean pass
-- **77 tests** across 8 test modules
+- Parser ecosystem: YAML manifests, JSON Schema validation, registry with most-specific-wins detection, two-tier catalog, test harness with 4 quality gates
+- 8 production parsers: Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary
+- CloudTrail parser for AWS audit logs
+- Generic fallback parsers at specificity 100
+- STIX 2.1 export for entities and diffs
+- `icarus parser` CLI subcommands: `validate`, `list`, `test`
 
 ### v2.0.0
-- **Entity resolution** — Atom/Bag/EventLog pattern with FTS5 blocking index
-- **Observations** — temporal event layer with generic FK to any ontology entity
-- **Two-graph architecture** — ontology graph + event graph in the same database
-- **Schema v4** — 5 new tables, 7 new indexes, migration chain v2->v3->v4
-- **Safe traversal** — `os.walk(onerror=...)`, `try/finally` connection cleanup
-- **43 tests**, macOS CI added
+- Entity resolution with Atom/Bag/EventLog pattern and FTS5 blocking index
+- Observations: temporal event layer with generic FK
+- Two-graph architecture: ontology + event graph
+- Schema v4: 5 new tables, 7 new indexes, migration chain v2->v3->v4
 
 ### v1.2.0
-- **Linux parser** — ELF detection, architecture classification, systemd parsing
-- **177,443 entities** validated across 3 datasets
+- Linux parser: ELF detection, architecture classification, systemd parsing
 
 ### v1.1.0
-- **5-category diff** — ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE
-- **Structural diffing** — relationship topology change detection
-- **HYGEIA as dependency** — `--skip-hygeia` flag
-- **Windows parser** — PE/DLL detection
+- 5-category diff engine: ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE
+- HYGEIA as a pipeline dependency with `--skip-hygeia` flag
+- Windows parser: PE/DLL detection
 
 ### v1.0.0
 - Core framework: pipeline, schema with FTS5, query engine, cross-version differ
@@ -375,7 +319,7 @@ icarus-framework/
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) — free for research, education, and personal use.
+[PolyForm Noncommercial 1.0.0](LICENSE)
 
 ## Author
 

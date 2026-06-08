@@ -1,21 +1,19 @@
 # Parser Development Guide
 
-## Production Parsers (v3.0.0)
+## Production Parsers
 
-ICARUS ships with 8 production parsers across 3 tiers:
+| Parser | Specificity | Reliability |
+|--------|:-----------:|:-----------:|
+| `cloud/aws/cloudtrail` | 5 | A |
+| `windows` | 20 | B |
+| `linux` | 20 | B |
+| `generic/json` | 100 | F |
+| `generic/xml` | 100 | F |
+| `generic/sqlite` | 100 | F |
+| `generic/archive` | 100 | F |
+| `generic/binary` | 100 | F |
 
-| Parser | Tier | Specificity | Reliability | Validated Against |
-|--------|------|:-----------:|:-----------:|-------------------|
-| `cloud/aws/cloudtrail` | production | 5 | A | 6 CloudTrail events, 4 IAM identities |
-| `windows` | production | 20 | B | 2,099,505 entities (full machine scan) |
-| `linux` | production | 20 | B | 96,181 entities (Ubuntu /usr) |
-| `generic/json` | production | 100 | F | JSON directory catalogs |
-| `generic/xml` | production | 100 | F | XML directory catalogs |
-| `generic/sqlite` | production | 100 | F | SQLite file + schema discovery |
-| `generic/archive` | production | 100 | F | Archive catalog + contents |
-| `generic/binary` | production | 100 | F | Catch-all for any directory |
-
-**Specificity** determines priority in auto-detection. Lower wins. CloudTrail (5) beats Windows (20) beats generic (100).
+**Specificity** determines priority in auto-detection. Lower wins.
 
 **Reliability** uses Admiralty/NATO grades: A (completely reliable) through F (reliability cannot be judged).
 
@@ -159,13 +157,12 @@ The test harness verifies this: second run must add zero entities.
 
 1. Create your parser module (e.g., `icarus/parsers/cloud/my_cloud.py`)
 2. Create a YAML manifest alongside it (e.g., `icarus/parsers/cloud/my_cloud.yaml`)
-3. Add to `icarus/parsers/__init__.py`:
+3. Add to the `_ALL_PARSERS` list in `icarus/parsers/__init__.py`:
 
 ```python
-# In the _CLOUD_PARSERS list (or appropriate category):
-_CLOUD_PARSERS = [
-    ("cloud.cloudtrail", "CloudTrailParser"),
-    ("cloud.my_cloud", "MyCloudParser"),
+_ALL_PARSERS = [
+    # ... existing parsers ...
+    ("icarus.parsers.cloud.my_cloud", "MyCloudParser", "cloud/my_cloud.yaml"),
 ]
 ```
 
