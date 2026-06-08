@@ -352,9 +352,18 @@ Defense in depth: normalize at ingest, verify at output. Same engine, same power
 ## Install
 
 ```bash
-pip install -e .
+pip install git+https://github.com/Indegosblade/icarus-framework.git
+```
 
-# With development tools
+From source:
+```bash
+git clone https://github.com/Indegosblade/icarus-framework.git
+cd icarus-framework
+pip install .
+```
+
+Development (editable + linting/testing tools):
+```bash
 pip install -e ".[dev]"
 ```
 
