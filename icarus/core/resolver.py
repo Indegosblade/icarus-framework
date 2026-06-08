@@ -20,7 +20,7 @@ class BlockingIndex:
         self.conn = sqlite3.connect(db_path)
 
     def index_atom(
-        self, atom_id: int, entity_type: str, source_key: str, properties: dict
+        self, atom_id: int, entity_type: str, source_key: str, properties: dict,
     ) -> None:
         """Manually add an atom to the FTS index (if triggers missed it)."""
         self.conn.execute(
@@ -80,7 +80,7 @@ class BlockingIndex:
             pass
         return tokens[:10]
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     def __enter__(self):
@@ -268,7 +268,7 @@ class EntityResolver:
             (event_type, bag_id, json.dumps(atom_ids), reason, confidence, operator, now),
         )
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     def __enter__(self):

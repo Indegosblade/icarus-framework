@@ -29,16 +29,6 @@ PII_PATTERNS = [
     (r"C:\\Users\\[^\\]+", "username_path_win"),
 ]
 
-CREDENTIAL_PATTERNS = [
-    r"password",
-    r"secret",
-    r"token",
-    r"api[_-]?key",
-    r"auth[_-]?token",
-    r"access[_-]?key",
-    r"private[_-]?key",
-]
-
 
 def sanitize_output(db_path: Path) -> Dict[str, Any]:
     """

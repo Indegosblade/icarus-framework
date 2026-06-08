@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
-from icarus.parsers.base import BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 
 class SqliteParser(BaseParser):
@@ -79,7 +79,7 @@ class SqliteParser(BaseParser):
                                 pass
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 50000 == 0:
+                    if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
                         conn.commit()
             conn.commit()
         finally:

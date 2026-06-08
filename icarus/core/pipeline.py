@@ -38,16 +38,15 @@ class PipelineContext:
         self.run_id: str = str(uuid.uuid4())
 
     @property
-    def elapsed(self):
+    def elapsed(self) -> float:
         return time.time() - self.start_time
 
 
 class Pipeline:
-    """
-    Main pipeline orchestrator.
+    """Main pipeline orchestrator.
 
     Sequences phases, manages checkpoints, handles resume-from-failure.
-    Streaming architecture: processes records one-at-a-time, 4GB RAM ceiling.
+    SQLite cache and mmap scale to available system RAM automatically.
     """
 
     def __init__(
@@ -62,10 +61,12 @@ class Pipeline:
         self.checkpoint_db = self.output.parent / f".{self.output.stem}_checkpoint.db"
         self.context = PipelineContext(self.source, self.output, parser_name)
 
-    def add_phase(self, name: str, handler: Callable, description: str = ""):
+    def add_phase(self, name: str, handler: Callable, description: str = "") -> None:
+        """Append a processing phase to the pipeline."""
         self.phases.append(PipelinePhase(name, handler, description))
 
     def get_last_checkpoint(self) -> int:
+        """Return the index of the last completed phase, or -1 if none."""
         if not self.checkpoint_db.exists():
             return -1
         conn = sqlite3.connect(str(self.checkpoint_db))
@@ -79,7 +80,8 @@ class Pipeline:
         finally:
             conn.close()
 
-    def save_checkpoint(self, phase_index: int, status: str, stats: dict = None):
+    def save_checkpoint(self, phase_index: int, status: str, stats: dict = None) -> None:
+        """Persist phase completion status for resume-on-crash."""
         conn = sqlite3.connect(str(self.checkpoint_db))
         try:
             conn.execute("""
@@ -147,9 +149,8 @@ class Pipeline:
         finally:
             conn.close()
 
-    def run(self, resume: bool = True, start_phase: Optional[int] = None):
-        """
-        Execute the pipeline.
+    def run(self, resume: bool = True, start_phase: Optional[int] = None) -> "PipelineContext":
+        """Execute the pipeline.
 
         Args:
             resume: If True, skip completed phases (default behavior).
@@ -201,7 +202,7 @@ class Pipeline:
 def create_default_pipeline(
     source: Path, output: Path, parser_name: str = "windows",
     skip_hygeia: bool = False,
-):
+) -> Pipeline:
     """Create a pipeline with the standard phase sequence.
 
     Args:

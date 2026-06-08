@@ -21,6 +21,7 @@ class ParserRegistry:
         self._manifests: Dict[str, ParserManifest] = {}
 
     def register(self, parser_cls: type, manifest: Optional[ParserManifest] = None) -> None:
+        """Register a parser class with an optional manifest."""
         inst = parser_cls()
         name = inst.name
         self._parsers[name] = parser_cls
@@ -46,12 +47,14 @@ class ParserRegistry:
         return candidates[0][2]
 
     def get(self, name: str) -> BaseParser:
+        """Return a parser instance by name. Raises ValueError if unknown."""
         if name not in self._parsers:
             available = list(self._parsers.keys()) or ["(none registered)"]
             raise ValueError(f"Unknown parser: '{name}'. Available: {available}")
         return self._parsers[name]()
 
     def list_all(self) -> List[dict]:
+        """Return metadata dicts for all registered parsers."""
         results = []
         for name, cls in self._parsers.items():
             inst = cls()
@@ -66,7 +69,9 @@ class ParserRegistry:
         return results
 
     def list_production(self) -> List[dict]:
+        """Return metadata for parsers in the production quality tier."""
         return [p for p in self.list_all() if p["tier"] == "production"]
 
     def list_candidate(self) -> List[dict]:
+        """Return metadata for parsers in the candidate quality tier."""
         return [p for p in self.list_all() if p["tier"] == "candidate"]

@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
-from icarus.parsers.base import BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 
 class JsonParser(BaseParser):
@@ -78,7 +78,7 @@ class JsonParser(BaseParser):
                             pass
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 1000 == 0:
+                    if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
                         conn.commit()
             conn.commit()
         finally:
