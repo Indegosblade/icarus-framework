@@ -7,10 +7,31 @@ from pathlib import Path
 
 def cmd_build(args):
     from icarus.core.pipeline import create_default_pipeline
+    from icarus.parsers import detect_parser
+
+    source = Path(args.source)
+    if not source.exists():
+        print(f"ERROR: Source path does not exist: {source}", file=sys.stderr)
+        sys.exit(1)
+    if not source.is_dir():
+        print(f"ERROR: Source must be a directory: {source}", file=sys.stderr)
+        sys.exit(1)
+
+    parser_name = args.parser
+    if parser_name is None:
+        parser_name = detect_parser(source)
+        if parser_name is None:
+            print(
+                "ERROR: Could not auto-detect source type. Specify --parser",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[ICARUS] Auto-detected parser: {parser_name}")
+
     pipeline = create_default_pipeline(
-        source=Path(args.source),
+        source=source,
         output=Path(args.output),
-        parser_name=args.parser,
+        parser_name=parser_name,
         skip_hygeia=args.skip_hygeia,
     )
     pipeline.run(resume=not args.fresh)
@@ -58,8 +79,8 @@ def main():
         "--source", "-s", required=True, help="Path to data source directory")
     build_p.add_argument("--output", "-o", required=True, help="Output database path")
     build_p.add_argument(
-        "--parser", "-p", default="windows",
-        help="Parser to use: windows, linux (default: windows)")
+        "--parser", "-p", default=None,
+        help="Parser to use: windows, linux (default: auto-detect)")
     build_p.add_argument(
         "--fresh", action="store_true", help="Ignore checkpoints, start from scratch")
     build_p.add_argument(
@@ -85,7 +106,17 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    {"build": cmd_build, "query": cmd_query, "diff": cmd_diff}[args.command](args)
+    try:
+        {"build": cmd_build, "query": cmd_query, "diff": cmd_diff}[args.command](args)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

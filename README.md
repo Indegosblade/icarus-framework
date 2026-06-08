@@ -7,45 +7,15 @@
 
 **An ontology framework that maps hidden relationships in structured data.**
 
-Things exist. Things have attributes. Things relate to other things. Those relationships — when normalized, cross-referenced, and diffed across time — reveal what's hidden.
-
-ICARUS is an intelligence engine. Point it at any structured data source. It extracts entities, maps their relationships, and builds a queryable graph. Then it asks the questions humans miss at scale: what changed between versions? What's reachable from where? What shouldn't be there?
-
----
-
-## The Dual Nature
-
-ICARUS is two things at the same time.
-
-**Without HYGEIA**, it is a raw intelligence engine — a data mapping tool that reveals privilege chains, hidden relationships, and silent changes in any system it's pointed at. In the wrong hands, this is a threat vector. It maps exactly what an attacker needs to know.
-
-**With [HYGEIA](https://github.com/Indegosblade/HYGEIA)**, it becomes a responsible intelligence framework. The sanitization layer strips PII, credentials, and identifying information before output. This is the architectural decision that makes the difference between a weapon and a research tool.
-
-HYGEIA is not a feature. It is the ethical boundary. The same engine, the same power, with guardrails that make responsible disclosure possible.
+Point it at any structured data source. It extracts entities, maps their relationships, and builds a queryable graph. Then it diffs across versions to find what changed — new files, shifted permissions, silent patches.
 
 ```
-                    ┌─────────────────┐
-                    │   Raw Source     │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │    Parser        │  ← source-agnostic
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  Entity Graph    │  ← ontology: entities + relationships
-                    └────────┬────────┘
-                             │
-               ┌─────────────┼─────────────┐
-               │                           │
-      ┌────────▼────────┐        ┌────────▼────────┐
-      │  WITHOUT HYGEIA  │        │   WITH HYGEIA    │
-      │                  │        │                  │
-      │  Raw graph.      │        │  Sanitized.      │
-      │  Full paths.     │        │  PII-free.       │
-      │  Real names.     │        │  Shareable.      │
-      │  Threat vector.  │        │  Research tool.  │
-      └──────────────────┘        └──────────────────┘
+Source directory → Parser → Entity graph → SQLite database
+                                              │
+                              ┌────────────────┤
+                              │                │
+                           Differ          HYGEIA
+                        (cross-version)  (PII sanitization)
 ```
 
 ---
@@ -75,7 +45,7 @@ with IcarusQuery("intel.db") as q:
     q.privileged_entitlements()
 ```
 
-These are not queries you write. They are intelligence views baked into the schema — materialized answers to questions security researchers ask repeatedly.
+Pre-built intelligence views. No query writing needed.
 
 ---
 
@@ -109,7 +79,7 @@ with IcarusDiffer("v1.0.db", "v2.0.db") as d:
     report = d.generate_report()
 ```
 
-Silent patches. New privileges granted. Services removed or added between builds. Binaries that moved to new locations. Permissions reassigned to different holders. The differ answers: *what did they change that they didn't tell you about?*
+Tracks silent patches, new privilege grants, removed services, relocated binaries, and reassigned permissions across builds.
 
 ---
 
@@ -213,13 +183,13 @@ class MyParser(BaseParser):
 Streaming. Checkpoint/resume. 4GB RAM ceiling.
 
 ```bash
-# Build from Windows application directory
-icarus build --source "C:\Program Files\MyApp" --output intel.db --parser windows
+# Auto-detects parser from source contents
+icarus build --source "C:\Program Files\MyApp" --output intel.db
 
-# Build from Linux filesystem
+# Or specify explicitly
 icarus build --source /usr --output linux.db --parser linux
 
-# Build without HYGEIA (raw output — unsanitized, loud warning)
+# Skip sanitization (raw output)
 icarus build --source /path/to/data --output raw.db --skip-hygeia
 
 # Query it
@@ -245,7 +215,7 @@ p.run(resume=True)  # resume from last checkpoint
 | Resume | Checkpoint per phase — crash at phase 6, resume at phase 6 |
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
-| Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own |
+| Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own. Auto-detected from source. |
 | Traversal | `os.walk` with error callbacks — handles broken symlinks, inaccessible paths, WSL artifacts |
 | Provenance | Pipeline auto-finalizes version records: entity_count + completed_at on every run |
 | Test suite | 43 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, entity resolution, observations |
@@ -287,44 +257,26 @@ Two graphs live in the same database: the **ontology graph** (entities and their
 
 ---
 
-## HYGEIA: The Architectural Decision
+## HYGEIA Sanitization
 
-[HYGEIA](https://github.com/Indegosblade/HYGEIA) is a core dependency — installed automatically with ICARUS. It is not a post-processing step. It is integrated into the pipeline itself.
+[HYGEIA](https://github.com/Indegosblade/HYGEIA) strips PII from output databases — usernames in paths, emails, credentials, device identifiers. Installed automatically as a dependency. Runs as a pipeline phase before the database is marked complete.
 
 ```python
 from icarus.integrations.hygeia import sanitize_output, verify_clean
 
-# Sanitize the output database
 stats = sanitize_output(db_path)
 # {'redacted': 47, 'tables_scanned': 8, 'patterns': 7}
 
-# Verify — hard gate, not optional
 result = verify_clean(db_path)
 assert result["passed"]
 ```
 
-To skip HYGEIA (raw output — you take responsibility):
-```python
-Pipeline(source, output, parser_name="windows", skip_hygeia=True)
-```
+To skip sanitization:
 ```bash
 icarus build --source /path/to/app --output raw.db --skip-hygeia
 ```
-Skipping logs `hygeia_skipped=true` to the database metadata and prints a loud warning. The output is unsanitized — do not share without manual review.
 
-What it removes:
-- Filesystem paths containing usernames
-- Email addresses, phone numbers, credentials
-- Device identifiers and serial numbers
-- Hostnames and internal network references
-- Any pattern matching 7 regex families
-
-What it guarantees:
-- Output databases contain zero PII
-- WAL files checkpointed and vacuumed (no recoverable deleted records)
-- Verification pass confirms clean before pipeline reports success
-
-This is what makes ICARUS publishable. Without it, every output database is a dossier. With it, it's research.
+Skipping logs `hygeia_skipped=true` to database metadata and prints a warning.
 
 ---
 
@@ -341,11 +293,7 @@ Five real datasets, two platforms. No configuration, no prep — raw pipeline ex
 
 **293,445 entities across real-world data. Zero PII in any output database.**
 
-The full profile test scanned 6 sources (Documents, Downloads, a large project directory, GitHub CLI, 7-Zip, Python 3.12) into a single 59.6 MB database. HYGEIA redacted all `C:\Users\<username>` paths to `[REDACTED_USERNAME_PATH_WIN]` and verified zero residual findings. The parser handles broken symlinks (WSL `.venv/lib64`), inaccessible system paths, and connection cleanup on partial failures — all discovered and fixed during integration testing.
-
-The Windows parser detects PE binaries (EXE/DLL) with architecture classification. The Linux parser detects ELF binaries, shared libraries (1,899 .so files), and systemd services (174 units).
-
-Defense in depth: normalize at ingest, verify at output. Same engine, same power, responsible output.
+The full profile test scanned 6 sources into a single 59.6 MB database. HYGEIA redacted all username paths and verified zero residual findings. Parsers handle broken symlinks, inaccessible paths, and connection cleanup on partial failures.
 
 ---
 
@@ -380,7 +328,7 @@ pip install -e ".[dev]"
 |-----------|-----|
 | **Ontology-first** | Entities and relationships are the product. Everything else is infrastructure. |
 | **Provenance on every cell** | Every datum carries source, confidence, observation time, and access marking. Trace anything to the run that produced it. |
-| **Sanitization-first** | HYGEIA runs before output, not after. Clean by default. |
+| **Sanitization built-in** | HYGEIA runs as a pipeline phase. PII stripped before output. |
 | **Streaming** | Process records one-at-a-time. Never load full dataset into RAM. |
 | **Source-agnostic** | The framework doesn't know what your entities are. It knows they relate. |
 | **Diffing as primitive** | Cross-version analysis is core, not bolted on. |
