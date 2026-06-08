@@ -48,7 +48,10 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
     the built-in fallback. Returns stats on what was found and cleaned.
     """
     if _HAS_HYGEIA_PACKAGE:
-        return sanitize_database(str(db_path))
+        try:
+            return sanitize_database(str(db_path))
+        except Exception:
+            pass  # fall through to built-in implementation
 
     conn = sqlite3.connect(str(db_path))
     stats = {"checked_rows": 0, "redacted": 0, "patterns_found": {}}
@@ -69,10 +72,16 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
 
                 cleaned, found = _redact_pii(value)
                 if found:
-                    conn.execute(
-                        f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
-                        (cleaned, rowid)
-                    )
+                    try:
+                        conn.execute(
+                            f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                            (cleaned, rowid)
+                        )
+                    except sqlite3.IntegrityError:
+                        conn.execute(
+                            f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                            (f"{cleaned}_{rowid}", rowid)
+                        )
                     stats["redacted"] += 1
                     for pattern_name in found:
                         stats["patterns_found"][pattern_name] = (

@@ -58,7 +58,8 @@ def main():
         "--source", "-s", required=True, help="Path to data source directory")
     build_p.add_argument("--output", "-o", required=True, help="Output database path")
     build_p.add_argument(
-        "--parser", "-p", default="windows", help="Parser to use (default: windows)")
+        "--parser", "-p", default="windows",
+        help="Parser to use: windows, linux (default: windows)")
     build_p.add_argument(
         "--fresh", action="store_true", help="Ignore checkpoints, start from scratch")
     build_p.add_argument(
