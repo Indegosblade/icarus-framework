@@ -18,6 +18,13 @@ venv/
 .venv/
 env/
 
+# Dev tools
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
 # IDE
 .vscode/
 .idea/

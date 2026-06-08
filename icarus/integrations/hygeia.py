@@ -5,11 +5,10 @@ Ensures output databases contain no PII, credentials, or source-identifying
 information before they leave the pipeline. Runs as a pipeline phase.
 """
 
-import sqlite3
 import re
+import sqlite3
 from pathlib import Path
-from typing import List, Dict, Any
-
+from typing import Any, Dict, List
 
 PII_PATTERNS = [
     (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "email"),
