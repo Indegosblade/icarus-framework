@@ -79,6 +79,29 @@ def cmd_parser(args):
         except Exception as e:
             print(f"FAIL: {manifest_path}\n  {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.parser_command == "test":
+        from icarus.parsers import get_parser
+        from icarus.parsers.manifest import load_manifest
+        from icarus.parsers.testing import ParserTestHarness
+        parser_inst = get_parser(args.parser_name)
+        parsers_dir = Path(__file__).parent / "parsers"
+        manifest_path = parsers_dir / f"{args.parser_name}.yaml"
+        if not manifest_path.exists():
+            print(f"ERROR: No manifest for parser '{args.parser_name}'", file=sys.stderr)
+            sys.exit(1)
+        manifest = load_manifest(manifest_path)
+        fixtures_dir = manifest.tests.get("fixtures_dir") if manifest.tests else None
+        if not fixtures_dir:
+            print("ERROR: No fixtures_dir in manifest", file=sys.stderr)
+            sys.exit(1)
+        fixtures_path = Path(fixtures_dir)
+        if not fixtures_path.is_absolute():
+            fixtures_path = Path(__file__).parent.parent / fixtures_dir
+        print(f"Testing parser: {args.parser_name}")
+        harness = ParserTestHarness(parser_inst, manifest, fixtures_path)
+        results = harness.run_all()
+        if not all(r.passed for r in results):
+            sys.exit(1)
     elif args.parser_command == "list":
         from icarus.parsers import get_registry
         entries = get_registry().list_all()
@@ -93,7 +116,7 @@ def cmd_parser(args):
                 f"{e['specificity']:<6} {e['description']}"
             )
     else:
-        print("Unknown parser command. Use: validate, list", file=sys.stderr)
+        print("Unknown parser command. Use: validate, list, test", file=sys.stderr)
         sys.exit(1)
 
 
@@ -137,6 +160,8 @@ def main():
     parser_sub = parser_p.add_subparsers(dest="parser_command")
     validate_p = parser_sub.add_parser("validate", help="Validate a parser manifest")
     validate_p.add_argument("path", help="Path to parser.yaml manifest file")
+    test_p = parser_sub.add_parser("test", help="Run parser test harness")
+    test_p.add_argument("parser_name", help="Name of the parser to test")
     parser_sub.add_parser("list", help="List all registered parsers")
 
     args = parser.parse_args()

@@ -71,12 +71,17 @@ class WindowsParser(BaseParser):
                                 "SELECT id FROM files WHERE path=?", (rel,)
                             ).fetchone()
                             if row:
-                                conn.execute(
-                                    "INSERT OR IGNORE INTO binaries "
-                                    "(file_id,executable_name,arch) VALUES (?,?,?)",
-                                    (row[0], path.name, _detect_pe_arch(path)),
-                                )
-                                stats["binaries"] += 1
+                                existing = conn.execute(
+                                    "SELECT id FROM binaries WHERE file_id=?",
+                                    (row[0],),
+                                ).fetchone()
+                                if not existing:
+                                    conn.execute(
+                                        "INSERT INTO binaries "
+                                        "(file_id,executable_name,arch) VALUES (?,?,?)",
+                                        (row[0], path.name, _detect_pe_arch(path)),
+                                    )
+                                    stats["binaries"] += 1
 
                         if ext == ".dll":
                             conn.execute(
