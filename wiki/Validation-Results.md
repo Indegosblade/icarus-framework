@@ -1,70 +1,49 @@
 # Validation Results
 
-Every number on this page comes from an actual pipeline run. No synthetic benchmarks.
+Test run data from actual pipeline executions.
 
-## v3.0.0 — Full Machine Scan
+## v3.0.0
 
-**Source:** `C:\Users\Kevin` (complete Windows user profile)
-**Parser:** Windows (production, specificity 20)
-**Install:** Fresh `pip install` from GitHub (clean clone)
+**Source:** Windows user profile directory
+**Parser:** Windows (auto-detected)
 
 | Metric | Value |
 |--------|------:|
-| Files cataloged | **2,045,000** |
-| Binaries detected | **29,427** |
-| Frameworks | **25,078** |
-| **Total entities** | **2,099,505** |
-| Database size | **20.5 GB** |
-| Schema version | v4 |
-
-### HYGEIA Sanitization
-
-| Phase | PII Findings |
-|-------|:------------:|
-| Pre-sanitize verify | **FAILED** (100+ patterns detected) |
-| Sanitization pass | **24,822 entries redacted** |
-| Post-sanitize verify | **PASSED** (0 findings) |
-
-PII detected: email patterns in file paths (LMStudio extensions, application data), username references in directory paths. All redacted. Zero residual.
+| Files cataloged | 2,045,000 |
+| Binaries detected | 29,427 |
+| Frameworks | 25,078 |
+| Total entities | 2,099,505 |
+| Database size | 20.5 GB |
+| PII findings pre-sanitize | 24,822 |
+| PII findings post-sanitize | 0 |
 
 ---
 
-## v2.0.0 — Multi-Source Validation
+## v2.0.0
 
-4 real-world datasets across 2 platforms:
+4 datasets across Windows and Linux:
 
-| Dataset | Platform | Entities | Source Size | Binaries | Runtime | PII | HYGEIA |
-|---------|----------|------:|-----:|---------:|--------:|:---:|:------:|
-| Full user profile | Windows | 116,002 | 244 GB | 399 PE | 49s | **0** | **PASS** |
-| Python 3.12 | Windows | 55,346 | 2,079 MB | 150 PE | 25s | **0** | **PASS** |
-| Chrome profile | Windows | 25,916 | 3,249 MB | 3 PE | 18s | **0** | **PASS** |
-| Ubuntu /usr | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | 52s | **0** | **PASS** |
-| **Total** | | **293,445** | | **1,663** | | | |
-
----
-
-## v1.2.0 — Cross-Platform Validation
-
-| Dataset | Platform | Entities | Binaries | PII | HYGEIA |
-|---------|----------|------:|---------:|:---:|:------:|
-| Python 3.12 | Windows | 55,346 | 150 PE | **0** | **PASS** |
-| Chrome profile | Windows | 25,916 | 3 PE | **0** | **PASS** |
-| Ubuntu /usr | Linux | 96,181 | 1,111 ELF | **0** | **PASS** |
-| **Total** | | **177,443** | **1,264** | | |
+| Dataset | Platform | Entities | Source Size | Binaries | PII Post-Sanitize |
+|---------|----------|------:|-----:|---------:|:---:|
+| User profile | Windows | 116,002 | 244 GB | 399 PE | 0 |
+| Python 3.12 | Windows | 55,346 | 2,079 MB | 150 PE | 0 |
+| Chrome profile | Windows | 25,916 | 3,249 MB | 3 PE | 0 |
+| Ubuntu /usr | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | 0 |
 
 ---
 
-## Cumulative
+## v1.2.0
 
-| Version | Total Entities Validated | Datasets | Platforms | PII Residual |
-|---------|------:|:---:|:---:|:---:|
-| v3.0.0 | 2,099,505 | 1 | Windows | **0** |
-| v2.0.0 | 293,445 | 4 | Windows + Linux | **0** |
-| v1.2.0 | 177,443 | 3 | Windows + Linux | **0** |
+| Dataset | Platform | Entities | Binaries | PII Post-Sanitize |
+|---------|----------|------:|---------:|:---:|
+| Python 3.12 | Windows | 55,346 | 150 PE | 0 |
+| Chrome profile | Windows | 25,916 | 3 PE | 0 |
+| Ubuntu /usr | Linux | 96,181 | 1,111 ELF | 0 |
 
-## What the Numbers Mean
+---
 
-- **Entities** = rows inserted across all ontology tables (files + binaries + daemons + entitlements + frameworks + etc.)
-- **PII** = HYGEIA `verify_clean()` findings post-sanitization. 0 means the database is safe to share.
-- **HYGEIA PASS** = `verify_clean()` returned `{"passed": True, "findings": 0}`
-- **Binaries** = PE (Windows) or ELF (Linux) executables detected and cataloged with architecture classification
+## Definitions
+
+- **Entities** — rows across all ontology tables (files, binaries, daemons, entitlements, frameworks, etc.)
+- **PII Post-Sanitize** — HYGEIA `verify_clean()` findings after sanitization. 0 means the database contains no detected PII.
+- **Binaries** — PE (Windows) or ELF (Linux) executables detected with architecture classification.
