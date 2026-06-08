@@ -5,31 +5,12 @@ Compares two ICARUS databases and identifies what changed between versions:
 added entities, removed entities, modified entities, and relationship changes.
 """
 
-import re
 import sqlite3
-from pathlib import Path
-from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-VALID_TABLES = frozenset({
-    "files", "binaries", "daemons", "entitlements",
-    "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
-    "metadata", "versions",
-})
-
-
-def _validate_table(name: str) -> str:
-    if name not in VALID_TABLES:
-        raise ValueError(f"Invalid table name: {name!r}")
-    return name
-
-
-def _validate_column(name: str) -> str:
-    if not _IDENTIFIER_RE.match(name):
-        raise ValueError(f"Invalid column name: {name!r}")
-    return name
+from icarus.core import validate_column, validate_table
 
 
 @dataclass
@@ -85,12 +66,12 @@ class IcarusDiffer:
 
         self.conn = sqlite3.connect(str(self.new_path))
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute(f"ATTACH DATABASE ? AS old_db", (str(self.old_path),))
+        self.conn.execute("ATTACH DATABASE ? AS old_db", (str(self.old_path),))
 
     def added_entities(self, table: str, key: str) -> DiffResult:
         """Entities present in new DB but not in old DB."""
-        table = _validate_table(table)
-        key = _validate_column(key)
+        table = validate_table(table)
+        key = validate_column(key)
         rows = self.conn.execute(f"""
             SELECT n.* FROM main.[{table}] n
             LEFT JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}]
@@ -107,8 +88,8 @@ class IcarusDiffer:
 
     def removed_entities(self, table: str, key: str) -> DiffResult:
         """Entities present in old DB but not in new DB."""
-        table = _validate_table(table)
-        key = _validate_column(key)
+        table = validate_table(table)
+        key = validate_column(key)
         rows = self.conn.execute(f"""
             SELECT o.* FROM old_db.[{table}] o
             LEFT JOIN main.[{table}] n ON o.[{key}] = n.[{key}]
@@ -125,9 +106,9 @@ class IcarusDiffer:
 
     def changed_entities(self, table: str, key: str, compare: str) -> DiffResult:
         """Entities present in both but with different values in compare column."""
-        table = _validate_table(table)
-        key = _validate_column(key)
-        compare = _validate_column(compare)
+        table = validate_table(table)
+        key = validate_column(key)
+        compare = validate_column(compare)
         rows = self.conn.execute(f"""
             SELECT n.[{key}], o.[{compare}] AS old_value, n.[{compare}] AS new_value
             FROM main.[{table}] n
@@ -186,7 +167,7 @@ class IcarusDiffer:
     def generate_report(self) -> str:
         """Generate a full Markdown diff report."""
         results = self.full_diff()
-        lines = [f"# ICARUS Version Diff\n",
+        lines = ["# ICARUS Version Diff\n",
                  f"Old: `{self.old_path.name}`\n",
                  f"New: `{self.new_path.name}`\n",
                  "---\n"]
