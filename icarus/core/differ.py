@@ -248,6 +248,38 @@ class IcarusDiffer:
             category=DiffCategory.STRUCTURAL,
         )
 
+    def observation_diff(self) -> DiffResult:
+        """Diff observation records between old and new databases."""
+        added_rows = self.conn.execute("""
+            SELECT n.entity_table, n.entity_id, n.event_type, n.observed_at
+            FROM main.observations n
+            LEFT JOIN old_db.observations o
+                ON n.entity_table = o.entity_table
+                AND n.entity_id = o.entity_id
+                AND n.event_type = o.event_type
+                AND n.observed_at = o.observed_at
+            WHERE o.id IS NULL
+        """).fetchall()
+
+        removed_rows = self.conn.execute("""
+            SELECT o.entity_table, o.entity_id, o.event_type, o.observed_at
+            FROM old_db.observations o
+            LEFT JOIN main.observations n
+                ON o.entity_table = n.entity_table
+                AND o.entity_id = n.entity_id
+                AND o.event_type = n.event_type
+                AND o.observed_at = n.observed_at
+            WHERE n.id IS NULL
+        """).fetchall()
+
+        return DiffResult(
+            added=[dict(r) for r in added_rows],
+            removed=[dict(r) for r in removed_rows],
+            changed=[],
+            table="observations",
+            key_column="entity_table",
+        )
+
     def full_diff(self) -> Dict[str, DiffResult]:
         """Run diff across all major tables, including structural analysis."""
         results = {}
