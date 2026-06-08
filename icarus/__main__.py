@@ -66,6 +66,24 @@ def cmd_diff(args):
             print(report)
 
 
+def cmd_parser(args):
+    if args.parser_command == "validate":
+        from icarus.parsers.manifest import validate_manifest
+        manifest_path = Path(args.path)
+        if not manifest_path.exists():
+            print(f"ERROR: Manifest not found: {manifest_path}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            validate_manifest(manifest_path)
+            print(f"PASS: {manifest_path}")
+        except Exception as e:
+            print(f"FAIL: {manifest_path}\n  {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        print("Unknown parser command. Use: validate", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="icarus",
@@ -101,13 +119,20 @@ def main():
     diff_p.add_argument("new", help="Path to newer database")
     diff_p.add_argument("--output", "-o", help="Write report to file (default: stdout)")
 
+    # parser
+    parser_p = sub.add_parser("parser", help="Parser management commands")
+    parser_sub = parser_p.add_subparsers(dest="parser_command")
+    validate_p = parser_sub.add_parser("validate", help="Validate a parser manifest")
+    validate_p.add_argument("path", help="Path to parser.yaml manifest file")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
         sys.exit(1)
 
     try:
-        {"build": cmd_build, "query": cmd_query, "diff": cmd_diff}[args.command](args)
+        {"build": cmd_build, "query": cmd_query, "diff": cmd_diff,
+         "parser": cmd_parser}[args.command](args)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
