@@ -81,29 +81,31 @@ class Pipeline:
 
     def save_checkpoint(self, phase_index: int, status: str, stats: dict = None):
         conn = sqlite3.connect(str(self.checkpoint_db))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS checkpoints (
-                phase_index INTEGER PRIMARY KEY,
-                phase_name TEXT,
-                status TEXT,
-                timestamp REAL,
-                stats TEXT
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    phase_index INTEGER PRIMARY KEY,
+                    phase_name TEXT,
+                    status TEXT,
+                    timestamp REAL,
+                    stats TEXT
+                )
+            """)
+            conn.execute(
+                "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?)",
+                (phase_index, self.phases[phase_index].name, status,
+                 time.time(), json.dumps(stats or {}))
             )
-        """)
-        conn.execute(
-            "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?)",
-            (phase_index, self.phases[phase_index].name, status,
-             time.time(), json.dumps(stats or {}))
-        )
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
 
     def _create_version_record(self):
         """Record this pipeline run in the versions table."""
         if not self.output.exists():
             return
+        conn = sqlite3.connect(str(self.output))
         try:
-            conn = sqlite3.connect(str(self.output))
             conn.execute("""
                 INSERT OR IGNORE INTO versions (run_id, parser_name, source_path, started_at)
                 VALUES (?, ?, ?, ?)
@@ -119,16 +121,17 @@ class Pipeline:
             if row:
                 self.context.version_id = row[0]
             conn.commit()
-            conn.close()
         except sqlite3.OperationalError:
-            pass  # versions table may not exist yet (pre-init phase)
+            pass
+        finally:
+            conn.close()
 
     def _finalize_version_record(self):
         """Update the version record with entity count and completion timestamp."""
         if not self.output.exists() or not self.context.version_id:
             return
+        conn = sqlite3.connect(str(self.output))
         try:
-            conn = sqlite3.connect(str(self.output))
             ingest_stats = self.context.stats.get("ingest", {})
             entity_count = sum(
                 v for v in ingest_stats.values() if isinstance(v, int)
@@ -139,9 +142,10 @@ class Pipeline:
                  self.context.version_id),
             )
             conn.commit()
-            conn.close()
         except sqlite3.OperationalError:
             pass
+        finally:
+            conn.close()
 
     def run(self, resume: bool = True, start_phase: Optional[int] = None):
         """
@@ -241,14 +245,16 @@ def create_default_pipeline(
 def _mark_hygeia_skipped(ctx) -> dict:
     """Record in metadata that HYGEIA was explicitly skipped."""
     conn = sqlite3.connect(str(ctx.output_db))
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-        ("hygeia_skipped", "true"),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-        ("hygeia_warning", "Output contains unsanitized data — review before sharing"),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+            ("hygeia_skipped", "true"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+            ("hygeia_warning", "Output contains unsanitized data — review before sharing"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
     return {"hygeia": "SKIPPED"}

@@ -55,43 +55,46 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
 
     conn = sqlite3.connect(str(db_path))
     stats = {"checked_rows": 0, "redacted": 0, "patterns_found": {}}
+    try:
+        text_columns = _get_text_columns(conn)
 
-    text_columns = _get_text_columns(conn)
+        for table, columns in text_columns.items():
+            rows = conn.execute(
+                f"SELECT rowid, {', '.join(columns)} FROM {table}"
+            ).fetchall()
 
-    for table, columns in text_columns.items():
-        rows = conn.execute(f"SELECT rowid, {', '.join(columns)} FROM {table}").fetchall()
+            for row in rows:
+                rowid = row[0]
+                stats["checked_rows"] += 1
 
-        for row in rows:
-            rowid = row[0]
-            stats["checked_rows"] += 1
+                for i, col in enumerate(columns):
+                    value = row[i + 1]
+                    if not value or not isinstance(value, str):
+                        continue
 
-            for i, col in enumerate(columns):
-                value = row[i + 1]
-                if not value or not isinstance(value, str):
-                    continue
+                    cleaned, found = _redact_pii(value)
+                    if found:
+                        try:
+                            conn.execute(
+                                f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                                (cleaned, rowid)
+                            )
+                        except sqlite3.IntegrityError:
+                            conn.execute(
+                                f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                                (f"{cleaned}_{rowid}", rowid)
+                            )
+                        stats["redacted"] += 1
+                        for pattern_name in found:
+                            stats["patterns_found"][pattern_name] = (
+                                stats["patterns_found"].get(pattern_name, 0) + 1
+                            )
 
-                cleaned, found = _redact_pii(value)
-                if found:
-                    try:
-                        conn.execute(
-                            f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
-                            (cleaned, rowid)
-                        )
-                    except sqlite3.IntegrityError:
-                        conn.execute(
-                            f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
-                            (f"{cleaned}_{rowid}", rowid)
-                        )
-                    stats["redacted"] += 1
-                    for pattern_name in found:
-                        stats["patterns_found"][pattern_name] = (
-                            stats["patterns_found"].get(pattern_name, 0) + 1
-                        )
-
-    conn.commit()
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    conn.execute("VACUUM")
-    conn.close()
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
 
     return stats
 
@@ -113,29 +116,31 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
 
     conn = sqlite3.connect(str(db_path))
     findings = []
+    try:
+        text_columns = _get_text_columns(conn)
 
-    text_columns = _get_text_columns(conn)
+        for table, columns in text_columns.items():
+            rows = conn.execute(
+                f"SELECT rowid, {', '.join(columns)} FROM {table}"
+            ).fetchall()
 
-    for table, columns in text_columns.items():
-        rows = conn.execute(f"SELECT rowid, {', '.join(columns)} FROM {table}").fetchall()
+            for row in rows:
+                for i, col in enumerate(columns):
+                    value = row[i + 1]
+                    if not value or not isinstance(value, str):
+                        continue
 
-        for row in rows:
-            for i, col in enumerate(columns):
-                value = row[i + 1]
-                if not value or not isinstance(value, str):
-                    continue
-
-                for pattern, name in PII_PATTERNS:
-                    if re.search(pattern, value):
-                        findings.append({
-                            "table": table,
-                            "column": col,
-                            "rowid": row[0],
-                            "pattern": name,
-                            "sample": value[:50],
-                        })
-
-    conn.close()
+                    for pattern, name in PII_PATTERNS:
+                        if re.search(pattern, value):
+                            findings.append({
+                                "table": table,
+                                "column": col,
+                                "rowid": row[0],
+                                "pattern": name,
+                                "sample": value[:50],
+                            })
+    finally:
+        conn.close()
 
     return {
         "passed": len(findings) == 0,
@@ -156,11 +161,13 @@ def _get_text_columns(conn: sqlite3.Connection) -> Dict[str, List[str]]:
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ).fetchall()
 
-    skip_tables = {"metadata", "files_fts", "daemons_fts",
-                   "files_fts_data", "files_fts_idx", "files_fts_content",
-                   "files_fts_docsize", "files_fts_config",
-                   "daemons_fts_data", "daemons_fts_idx", "daemons_fts_content",
-                   "daemons_fts_docsize", "daemons_fts_config"}
+    all_names = {t[0] for t in tables}
+    skip_tables = {"metadata"}
+    for name in all_names:
+        if name.endswith("_fts"):
+            skip_tables.add(name)
+            for suffix in ("data", "idx", "content", "docsize", "config"):
+                skip_tables.add(f"{name}_{suffix}")
 
     for (table_name,) in tables:
         if table_name in skip_tables:

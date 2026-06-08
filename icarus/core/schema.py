@@ -462,58 +462,60 @@ def initialize_database(db_path: Path, metadata: dict = None) -> dict:
     Returns stats dict with table count and schema version.
     """
     conn = sqlite3.connect(str(db_path))
-
-    existing_version = None
     try:
-        row = conn.execute(
-            "SELECT value FROM metadata WHERE key = 'schema_version'"
-        ).fetchone()
-        if row:
-            existing_version = int(row[0])
-    except sqlite3.OperationalError:
-        pass
+        existing_version = None
+        try:
+            row = conn.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+            if row:
+                existing_version = int(row[0])
+        except sqlite3.OperationalError:
+            pass
 
-    if existing_version == 2:
-        migrate_v2_to_v3(conn)
-        migrate_v3_to_v4(conn)
-    elif existing_version == 3:
-        migrate_v3_to_v4(conn)
-    elif existing_version is None or existing_version < 2:
-        conn.executescript(CORE_SCHEMA)
-        conn.executescript(INDEXES)
-        conn.executescript(FTS_SCHEMA)
-        conn.executescript(FTS_TRIGGERS)
-        conn.executescript(VIEWS)
+        if existing_version == 2:
+            migrate_v2_to_v3(conn)
+            migrate_v3_to_v4(conn)
+        elif existing_version == 3:
+            migrate_v3_to_v4(conn)
+        elif existing_version is None or existing_version < 2:
+            conn.executescript(CORE_SCHEMA)
+            conn.executescript(INDEXES)
+            conn.executescript(FTS_SCHEMA)
+            conn.executescript(FTS_TRIGGERS)
+            conn.executescript(VIEWS)
 
-    conn.execute(
-        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-        ("schema_version", str(SCHEMA_VERSION))
-    )
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+            ("schema_version", str(SCHEMA_VERSION))
+        )
 
-    if metadata:
-        for k, v in metadata.items():
-            conn.execute(
-                "INSERT OR REPLACE INTO metadata VALUES (?, ?)", (k, str(v))
-            )
+        if metadata:
+            for k, v in metadata.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO metadata VALUES (?, ?)", (k, str(v))
+                )
 
-    conn.commit()
+        conn.commit()
 
-    tables = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
-    ).fetchone()[0]
+        tables = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
 
-    conn.close()
     return {"tables": tables, "schema_version": SCHEMA_VERSION}
 
 
 def get_schema_version(db_path: Path) -> Optional[int]:
     """Get the schema version of an existing database."""
+    conn = sqlite3.connect(str(db_path))
     try:
-        conn = sqlite3.connect(str(db_path))
         row = conn.execute(
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()
-        conn.close()
         return int(row[0]) if row else None
     except (sqlite3.OperationalError, TypeError):
         return None
+    finally:
+        conn.close()
