@@ -6,9 +6,11 @@ in sequence. Each parser knows how to extract entities and relationships
 from one specific data source type.
 """
 
+import hashlib
+import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 class BaseParser(ABC):
@@ -73,17 +75,18 @@ class BaseParser(ABC):
         Override to add parser-specific verification. Default
         checks that core tables have rows.
         """
-        import sqlite3
         conn = sqlite3.connect(str(db_path))
-        tables = ["files", "binaries"]
-        stats = {}
-        for t in tables:
-            try:
-                count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                stats[t] = count
-            except sqlite3.OperationalError:
-                stats[t] = 0
-        conn.close()
+        try:
+            tables = ["files", "binaries"]
+            stats = {}
+            for t in tables:
+                try:
+                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    stats[t] = count
+                except sqlite3.OperationalError:
+                    stats[t] = 0
+        finally:
+            conn.close()
 
         if stats.get("files", 0) == 0:
             raise ValueError("Verification failed: files table is empty")
@@ -98,3 +101,27 @@ class BaseParser(ABC):
         The pipeline checks availability before starting.
         """
         return []
+
+    @staticmethod
+    def _rel_path(path: Path, source: Path) -> str:
+        """Normalized relative path for database storage."""
+        return "/" + str(path.relative_to(source)).replace("\\", "/")
+
+    @staticmethod
+    def _safe_hash(path: Path, size: int) -> Optional[str]:
+        """SHA-256 of file contents, or None if >50MB or inaccessible."""
+        if size >= 50_000_000:
+            return None
+        try:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        except (PermissionError, OSError):
+            return None
+
+    @staticmethod
+    def _check_magic(path: Path, magic: bytes) -> bool:
+        """Check if file starts with the given magic bytes."""
+        try:
+            with open(path, "rb") as f:
+                return f.read(len(magic)) == magic
+        except (PermissionError, OSError):
+            return False

@@ -54,7 +54,6 @@ class QueryResult:
 
 
 
-
 class IcarusQuery:
     """
     Query engine for ICARUS intelligence databases.
@@ -113,8 +112,7 @@ class IcarusQuery:
             """)
             result.query_name = "Privileged Entitlements"
             return result
-        search_keys = keys
-        placeholders = ",".join(["?"] * len(search_keys))
+        placeholders = ",".join(["?"] * len(keys))
         result = self.execute(f"""
             SELECT e.key, e.value, b.bundle_id, f.path
             FROM entitlements e
@@ -122,7 +120,7 @@ class IcarusQuery:
             JOIN files f ON b.file_id = f.id
             WHERE e.key IN ({placeholders})
             ORDER BY e.key, b.bundle_id
-        """, tuple(search_keys))
+        """, tuple(keys))
         result.query_name = "Privileged Entitlements"
         return result
 
@@ -195,22 +193,17 @@ class IcarusQuery:
         """Join ontology entities with their observations."""
         if ontology_table not in VALID_TABLES:
             raise ValueError(f"Invalid table: {ontology_table!r}")
+        sql = (
+            f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
+            f"FROM [{ontology_table}] o "
+            f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
+        )
+        params: list = [ontology_table]
         if event_type:
-            result = self.execute(
-                f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
-                f"FROM [{ontology_table}] o "
-                f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
-                f"WHERE obs.event_type = ? ORDER BY obs.observed_at",
-                (ontology_table, event_type),
-            )
-        else:
-            result = self.execute(
-                f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
-                f"FROM [{ontology_table}] o "
-                f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
-                f"ORDER BY obs.observed_at",
-                (ontology_table,),
-            )
+            sql += "WHERE obs.event_type = ? "
+            params.append(event_type)
+        sql += "ORDER BY obs.observed_at"
+        result = self.execute(sql, tuple(params))
         result.query_name = f"Cross-Graph: {ontology_table}"
         return result
 
