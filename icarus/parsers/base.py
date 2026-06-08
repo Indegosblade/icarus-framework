@@ -8,7 +8,7 @@ from one specific data source type.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class BaseParser(ABC):

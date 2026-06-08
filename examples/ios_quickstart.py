@@ -7,10 +7,11 @@ Usage:
 
 import argparse
 from pathlib import Path
+
 from icarus.core.pipeline import Pipeline
 from icarus.core.schema import initialize_database
-from icarus.parsers.ios import iOSParser
 from icarus.integrations.hygeia import sanitize_output, verify_clean
+from icarus.parsers.ios import iOSParser
 
 
 def main():
@@ -39,11 +40,14 @@ def main():
         "parser": ctx.parser_name,
     }), "Initialize database schema")
 
-    pipeline.add_phase("extract", lambda ctx: ios_parser.extract_entities(ctx.source, ctx.output_db),
-                       "Extract all entities from rootfs")
+    pipeline.add_phase(
+        "extract", lambda ctx: ios_parser.extract_entities(ctx.source, ctx.output_db),
+        "Extract all entities from rootfs")
 
-    pipeline.add_phase("relationships", lambda ctx: ios_parser.extract_relationships(ctx.source, ctx.output_db),
-                       "Map entity relationships")
+    pipeline.add_phase(
+        "relationships",
+        lambda ctx: ios_parser.extract_relationships(ctx.source, ctx.output_db),
+        "Map entity relationships")
 
     pipeline.add_phase("verify", lambda ctx: ios_parser.verify(ctx.output_db),
                        "Quality gates")

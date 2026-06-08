@@ -9,7 +9,6 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-
 SCHEMA_VERSION = 2
 
 CORE_SCHEMA = """
