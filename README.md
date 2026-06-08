@@ -146,6 +146,9 @@ Streaming. Checkpoint/resume. 4GB RAM ceiling.
 # Build intelligence database from iOS rootfs
 icarus build --source ./rootfs --output intel.db --parser ios
 
+# Build without HYGEIA (raw output — unsanitized, loud warning)
+icarus build --source ./rootfs --output raw.db --parser ios --skip-hygeia
+
 # Query it
 icarus query intel.db --search "backboardd"
 icarus query intel.db "SELECT * FROM v_sandbox_escape_surface"
@@ -303,6 +306,15 @@ icarus-framework/
 ├── LICENSE                   # PolyForm Noncommercial 1.0.0
 └── pyproject.toml
 ```
+
+---
+
+## Changelog
+
+| Version | What Changed |
+|---------|-------------|
+| **v1.1.0** | Five-category diff classification (structural_diff, DiffCategory enum). HYGEIA real package wire-up with fallback. `--skip-hygeia` flag. Windows parser. Real-world validation (25K entities, zero PII). |
+| **v1.0.0** | Core framework: pipeline, schema, query engine, differ, iOS parser, HYGEIA integration, FTS5, cell-level provenance, CI. |
 
 ---
 

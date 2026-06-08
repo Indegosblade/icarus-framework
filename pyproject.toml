@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "icarus-framework"
-version = "1.0.0"
+version = "1.1.0"
 description = "Modular intelligence framework for structured data analysis"
 readme = "README.md"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
@@ -35,6 +35,9 @@ Issues = "https://github.com/Indegosblade/icarus-framework/issues"
 icarus = "icarus.__main__:main"
 
 [project.optional-dependencies]
+hygeia = [
+    "hygeia",
+]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

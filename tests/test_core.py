@@ -33,7 +33,7 @@ def test_imports():
     from icarus.core import VALID_FTS_TABLES, VALID_TABLES
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.1.0"
     assert SCHEMA_VERSION == 3
     assert len(VALID_TABLES) == 10
     assert len(VALID_FTS_TABLES) == 2
@@ -283,6 +283,102 @@ def test_marking_default(tmp_db):
 
     row = conn.execute("SELECT marking FROM files WHERE path = '/usr/bin/test'").fetchone()
     assert row[0] == "UNCLASSIFIED"
+    conn.close()
+
+
+def test_diff_categories_exist():
+    from icarus.core.differ import DiffCategory
+    assert DiffCategory.ADDITION.value == "addition"
+    assert DiffCategory.DELETION.value == "deletion"
+    assert DiffCategory.PROPERTY_CHANGE.value == "property_change"
+    assert DiffCategory.STRUCTURAL.value == "structural"
+    assert DiffCategory.RESOLUTION_CHANGE.value == "resolution_change"
+
+
+def test_structural_diff(two_dbs):
+    from icarus.core.differ import DiffCategory, IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn1 = sqlite3.connect(str(db1))
+    conn1.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 500, 'binary')
+    """)
+    conn1.execute("INSERT INTO binaries (file_id, executable_name) VALUES (1, 'test')")
+    conn1.commit()
+    conn1.close()
+
+    conn2 = sqlite3.connect(str(db2))
+    conn2.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/sbin/test', 'test', '', 500, 'binary')
+    """)
+    conn2.execute("INSERT INTO binaries (file_id, executable_name) VALUES (99, 'test')")
+    conn2.commit()
+    conn2.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.structural_diff()
+        assert result.category == DiffCategory.STRUCTURAL
+        assert len(result.structural) == 1
+        assert result.structural[0]["type"] == "binary_file_moved"
+
+
+def test_full_diff_includes_structural(two_dbs):
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        results = d.full_diff()
+        assert "structural" in results
+
+
+def test_resolution_change_never_produced(two_dbs):
+    """RESOLUTION_CHANGE is reserved for Phase 2 — must never appear in v1 output."""
+    from icarus.core.differ import DiffCategory, IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn2 = sqlite3.connect(str(db2))
+    conn2.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/new', 'new', '', 100, 'binary')
+    """)
+    conn2.commit()
+    conn2.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        results = d.full_diff()
+        for diff_result in results.values():
+            assert diff_result.category != DiffCategory.RESOLUTION_CHANGE
+
+
+def test_skip_hygeia_metadata(tmp_db):
+    from icarus.core.pipeline import _mark_hygeia_skipped
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+
+    class FakeCtx:
+        output_db = tmp_db
+
+    _mark_hygeia_skipped(FakeCtx())
+    conn = sqlite3.connect(str(tmp_db))
+    val = conn.execute("SELECT value FROM metadata WHERE key = 'hygeia_skipped'").fetchone()
+    assert val[0] == "true"
+    warn = conn.execute("SELECT value FROM metadata WHERE key = 'hygeia_warning'").fetchone()
+    assert "unsanitized" in warn[0]
     conn.close()
 
 

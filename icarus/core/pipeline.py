@@ -50,10 +50,14 @@ class Pipeline:
     Streaming architecture: processes records one-at-a-time, 4GB RAM ceiling.
     """
 
-    def __init__(self, source: Path, output: Path, parser_name: str = "ios"):
+    def __init__(
+        self, source: Path, output: Path, parser_name: str = "ios",
+        skip_hygeia: bool = False,
+    ):
         self.source = Path(source)
         self.output = Path(output)
         self.parser_name = parser_name
+        self.skip_hygeia = skip_hygeia
         self.phases: List[PipelinePhase] = []
         self.checkpoint_db = self.output.parent / f".{self.output.stem}_checkpoint.db"
         self.context = PipelineContext(self.source, self.output, parser_name)
@@ -168,13 +172,22 @@ class Pipeline:
         return self.context
 
 
-def create_default_pipeline(source: Path, output: Path, parser_name: str = "ios"):
-    """Create a pipeline with the standard phase sequence."""
+def create_default_pipeline(
+    source: Path, output: Path, parser_name: str = "ios",
+    skip_hygeia: bool = False,
+):
+    """Create a pipeline with the standard phase sequence.
+
+    Args:
+        skip_hygeia: If True, skips HYGEIA sanitization. The output database
+            will contain raw, unsanitized data. A warning is printed and
+            the skip is recorded in the database metadata.
+    """
     from icarus.core.schema import initialize_database
     from icarus.integrations.hygeia import sanitize_output
     from icarus.parsers import get_parser
 
-    pipeline = Pipeline(source, output, parser_name)
+    pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
     parser = get_parser(parser_name)
 
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
@@ -187,7 +200,33 @@ def create_default_pipeline(source: Path, output: Path, parser_name: str = "ios"
         "Map relationships between entities")
     pipeline.add_phase("verify", lambda ctx: parser.verify(ctx.output_db),
                        "Quality gates and verification")
-    pipeline.add_phase("sanitize", lambda ctx: sanitize_output(ctx.output_db),
-                       "HYGEIA sanitization pass")
+
+    if skip_hygeia:
+        print("\n" + "!" * 60)
+        print("WARNING: HYGEIA SANITIZATION DISABLED (--skip-hygeia)")
+        print("Output database will contain raw, unsanitized data.")
+        print("DO NOT share this database without manual review.")
+        print("!" * 60 + "\n")
+        pipeline.add_phase("skip_hygeia_marker", _mark_hygeia_skipped,
+                           "Record HYGEIA skip in metadata")
+    else:
+        pipeline.add_phase("sanitize", lambda ctx: sanitize_output(ctx.output_db),
+                           "HYGEIA sanitization pass")
 
     return pipeline
+
+
+def _mark_hygeia_skipped(ctx) -> dict:
+    """Record in metadata that HYGEIA was explicitly skipped."""
+    conn = sqlite3.connect(str(ctx.output_db))
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("hygeia_skipped", "true"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("hygeia_warning", "Output contains unsanitized data — review before sharing"),
+    )
+    conn.commit()
+    conn.close()
+    return {"hygeia": "SKIPPED"}
