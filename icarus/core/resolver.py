@@ -13,6 +13,83 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 
+class BlockingIndex:
+    """FTS5-backed blocking index for entity resolution candidate generation."""
+
+    def __init__(self, db_path: str):
+        self.conn = sqlite3.connect(db_path)
+
+    def index_atom(
+        self, atom_id: int, entity_type: str, source_key: str, properties: dict
+    ) -> None:
+        """Manually add an atom to the FTS index (if triggers missed it)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO atoms_fts(rowid, entity_type, source_key, properties) "
+            "VALUES (?, ?, ?, ?)",
+            (atom_id, entity_type, source_key, json.dumps(properties)),
+        )
+        self.conn.commit()
+
+    def candidates_for(self, atom_id: int, limit: int = 100) -> List[Tuple[int, float]]:
+        """Return (atom_id, score) pairs of potential matches. Never returns self."""
+        row = self.conn.execute(
+            "SELECT entity_type, source_key, properties FROM atoms WHERE id = ?",
+            (atom_id,),
+        ).fetchone()
+        if not row:
+            return []
+
+        entity_type, source_key, properties = row
+        tokens = self._extract_tokens(entity_type, source_key, properties)
+        if not tokens:
+            return []
+
+        match_expr = " OR ".join(tokens)
+        rows = self.conn.execute(
+            "SELECT rowid, rank FROM atoms_fts WHERE atoms_fts MATCH ? "
+            "ORDER BY rank LIMIT ?",
+            (match_expr, limit + 1),
+        ).fetchall()
+
+        return [(r[0], -r[1]) for r in rows if r[0] != atom_id][:limit]
+
+    def rebuild(self) -> int:
+        """Rebuild the full blocking index from atoms table. Returns atom count."""
+        self.conn.execute("INSERT INTO atoms_fts(atoms_fts) VALUES ('rebuild')")
+        self.conn.commit()
+        count = self.conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0]
+        return count
+
+    def _extract_tokens(self, entity_type: str, source_key: str, properties: str) -> List[str]:
+        """Extract searchable tokens from atom data."""
+        tokens = []
+        for val in [source_key]:
+            for word in val.split():
+                cleaned = "".join(c for c in word if c.isalnum())
+                if cleaned and len(cleaned) > 1:
+                    tokens.append(cleaned)
+        try:
+            props = json.loads(properties) if isinstance(properties, str) else properties
+            for v in props.values():
+                if isinstance(v, str):
+                    for word in v.split():
+                        cleaned = "".join(c for c in word if c.isalnum())
+                        if cleaned and len(cleaned) > 1:
+                            tokens.append(cleaned)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        return tokens[:10]
+
+    def close(self):
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 class EntityResolver:
     """Resolve entities across sources using the Atom/Bag/EventLog pattern."""
 

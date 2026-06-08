@@ -625,6 +625,71 @@ def test_unresolved_atoms(tmp_db):
         assert a3 in unresolved
 
 
+def test_atoms_fts_trigger(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        r.ingest_atom(1, "files", "server_config", {"name": "nginx.conf", "role": "webserver"})
+
+    conn = sqlite3.connect(str(tmp_db))
+    rows = conn.execute("SELECT rowid FROM atoms_fts WHERE atoms_fts MATCH 'server_config'").fetchall()
+    assert len(rows) == 1
+    conn.close()
+
+
+def test_blocking_candidates(tmp_db):
+    from icarus.core.resolver import BlockingIndex, EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "nginx_config", {"name": "nginx.conf", "type": "config"})
+        a2 = r.ingest_atom(1, "files", "nginx_binary", {"name": "nginx", "type": "binary"})
+        a3 = r.ingest_atom(1, "files", "postgres_config", {"name": "postgres.conf", "type": "config"})
+
+    with BlockingIndex(str(tmp_db)) as bi:
+        candidates = bi.candidates_for(a1)
+        candidate_ids = [c[0] for c in candidates]
+        assert len(candidate_ids) > 0
+        assert a1 not in candidate_ids
+
+
+def test_blocking_no_self_match(tmp_db):
+    from icarus.core.resolver import BlockingIndex, EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "test_file", {"name": "test"})
+
+    with BlockingIndex(str(tmp_db)) as bi:
+        candidates = bi.candidates_for(a1)
+        candidate_ids = [c[0] for c in candidates]
+        assert a1 not in candidate_ids
+
+
+def test_blocking_threshold(tmp_db):
+    from icarus.core.resolver import BlockingIndex, EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "alpha_service", {"name": "alpha", "role": "primary"})
+        for i in range(5):
+            r.ingest_atom(1, "files", f"beta_{i}", {"name": f"beta{i}", "role": "secondary"})
+
+    with BlockingIndex(str(tmp_db)) as bi:
+        candidates = bi.candidates_for(a1, limit=3)
+        assert len(candidates) <= 3
+
+
+def test_blocking_rebuild(tmp_db):
+    from icarus.core.resolver import BlockingIndex, EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        r.ingest_atom(1, "files", "k1", {"name": "a"})
+        r.ingest_atom(1, "files", "k2", {"name": "b"})
+        r.ingest_atom(1, "files", "k3", {"name": "c"})
+
+    with BlockingIndex(str(tmp_db)) as bi:
+        count = bi.rebuild()
+        assert count == 3
+
+
 def test_obs_fk_any_ontology_table(tmp_db):
     from icarus.core.schema import initialize_database
 
