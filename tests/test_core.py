@@ -391,6 +391,124 @@ def test_skip_hygeia_metadata(tmp_db):
     conn.close()
 
 
+def test_observations_table_exists(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='observations'"
+    ).fetchall()
+    assert len(tables) == 1
+
+    columns = conn.execute("PRAGMA table_info(observations)").fetchall()
+    col_names = {c[1] for c in columns}
+    assert "entity_table" in col_names
+    assert "entity_id" in col_names
+    assert "observed_at" in col_names
+    assert "event_type" in col_names
+    assert "confidence" in col_names
+    conn.close()
+
+
+def test_observation_insert(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 100, 'binary')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type, confidence)
+        VALUES ('files', 1, '2026-06-07T12:00:00Z', 'seen', 1.0)
+    """)
+    conn.commit()
+
+    row = conn.execute("SELECT * FROM observations WHERE entity_id = 1").fetchone()
+    assert row is not None
+    conn.close()
+
+
+def test_observations_for(tmp_db):
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 100, 'binary')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-07T12:00:00Z', 'seen')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-08T12:00:00Z', 'changed')
+    """)
+    conn.commit()
+    conn.close()
+
+    with IcarusQuery(str(tmp_db)) as q:
+        result = q.observations_for("files", 1)
+        assert result.count == 2
+
+
+def test_pattern_of_life(tmp_db):
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 100, 'binary')
+    """)
+    for ts in ["2026-06-01T00:00:00Z", "2026-06-05T00:00:00Z", "2026-06-10T00:00:00Z"]:
+        conn.execute(
+            "INSERT INTO observations (entity_table, entity_id, observed_at, event_type) "
+            "VALUES ('files', 1, ?, 'seen')", (ts,)
+        )
+    conn.commit()
+    conn.close()
+
+    with IcarusQuery(str(tmp_db)) as q:
+        result = q.pattern_of_life("files", 1, "2026-06-02", "2026-06-09")
+        assert result.count == 1
+
+
+def test_obs_fk_any_ontology_table(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/a', 'a', '', 100, 'binary')
+    """)
+    conn.execute("""
+        INSERT INTO sandbox_profiles (name) VALUES ('test_profile')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-07T00:00:00Z', 'seen')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('sandbox_profiles', 1, '2026-06-07T00:00:00Z', 'seen')
+    """)
+    conn.commit()
+
+    rows = conn.execute("SELECT COUNT(*) FROM observations").fetchone()
+    assert rows[0] == 2
+    conn.close()
+
+
 def test_migration_v2_to_v3(tmp_db):
     from icarus.core.schema import migrate_v2_to_v3
 
