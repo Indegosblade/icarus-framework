@@ -1,0 +1,25 @@
+parser_id: "generic/binary"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "Generic binary/unknown — catalogs files by metadata (size, hash, extension)"
+identify:
+  specificity_level: 100
+  markers:
+    - type: "any_file"
+  confidence: 0.10
+consumes:
+  - "application/octet-stream"
+produces:
+  entity_types: ["files"]
+dependencies:
+  tools: []
+  python: []
+reliability: "F"
+default_confidence: 0.10
+tests:
+  fixtures_dir: "tests/fixtures/generic_binary/"
+  min_entities: 1
+  golden_output: "tests/golden/generic_binary.json"

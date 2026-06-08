@@ -1,0 +1,28 @@
+parser_id: "generic/sqlite"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "Generic SQLite database directory — catalogs .db/.sqlite files and schemas"
+identify:
+  specificity_level: 100
+  markers:
+    - type: "file_extension"
+      pattern: "*.db"
+    - type: "file_extension"
+      pattern: "*.sqlite"
+  confidence: 0.30
+consumes:
+  - "application/x-sqlite3"
+produces:
+  entity_types: ["files"]
+dependencies:
+  tools: []
+  python: []
+reliability: "F"
+default_confidence: 0.30
+tests:
+  fixtures_dir: "tests/fixtures/generic_sqlite/"
+  min_entities: 1
+  golden_output: "tests/golden/generic_sqlite.json"

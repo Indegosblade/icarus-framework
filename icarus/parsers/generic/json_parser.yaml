@@ -1,0 +1,26 @@
+parser_id: "generic/json"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "Generic JSON file directory — catalogs .json files and top-level keys"
+identify:
+  specificity_level: 100
+  markers:
+    - type: "file_extension"
+      pattern: "*.json"
+  confidence: 0.30
+consumes:
+  - "application/json"
+produces:
+  entity_types: ["files"]
+dependencies:
+  tools: []
+  python: []
+reliability: "F"
+default_confidence: 0.30
+tests:
+  fixtures_dir: "tests/fixtures/generic_json/"
+  min_entities: 1
+  golden_output: "tests/golden/generic_json.json"

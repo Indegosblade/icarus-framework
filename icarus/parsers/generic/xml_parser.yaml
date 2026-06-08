@@ -1,0 +1,26 @@
+parser_id: "generic/xml"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "Generic XML file directory — catalogs .xml files"
+identify:
+  specificity_level: 100
+  markers:
+    - type: "file_extension"
+      pattern: "*.xml"
+  confidence: 0.30
+consumes:
+  - "application/xml"
+produces:
+  entity_types: ["files"]
+dependencies:
+  tools: []
+  python: []
+reliability: "F"
+default_confidence: 0.30
+tests:
+  fixtures_dir: "tests/fixtures/generic_xml/"
+  min_entities: 1
+  golden_output: "tests/golden/generic_xml.json"

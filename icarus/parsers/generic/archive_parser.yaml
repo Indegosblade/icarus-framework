@@ -1,0 +1,30 @@
+parser_id: "generic/archive"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "Generic archive directory — catalogs .zip/.tar/.gz files and contents"
+identify:
+  specificity_level: 100
+  markers:
+    - type: "file_extension"
+      pattern: "*.zip"
+    - type: "file_extension"
+      pattern: "*.tar.gz"
+  confidence: 0.30
+consumes:
+  - "application/zip"
+  - "application/gzip"
+  - "application/x-tar"
+produces:
+  entity_types: ["files"]
+dependencies:
+  tools: []
+  python: []
+reliability: "F"
+default_confidence: 0.30
+tests:
+  fixtures_dir: "tests/fixtures/generic_archive/"
+  min_entities: 1
+  golden_output: "tests/golden/generic_archive.json"
