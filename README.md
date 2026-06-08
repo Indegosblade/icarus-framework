@@ -150,11 +150,14 @@ class MyParser(BaseParser):
 Streaming. Checkpoint/resume. 4GB RAM ceiling.
 
 ```bash
-# Build intelligence database
-icarus build --source /path/to/app --output intel.db --parser windows
+# Build from Windows application directory
+icarus build --source "C:\Program Files\MyApp" --output intel.db --parser windows
+
+# Build from Linux filesystem
+icarus build --source /usr --output linux.db --parser linux
 
 # Build without HYGEIA (raw output — unsanitized, loud warning)
-icarus build --source /path/to/app --output raw.db --skip-hygeia
+icarus build --source /path/to/data --output raw.db --skip-hygeia
 
 # Query it
 icarus query intel.db --search "config"
@@ -167,7 +170,7 @@ icarus diff old.db new.db --report changes.md
 ```python
 from icarus.core.pipeline import Pipeline
 
-p = Pipeline(source, output, parser_name="windows")
+p = Pipeline(source, output, parser_name="linux")
 p.run()          # full run
 p.run(resume=True)  # resume from last checkpoint
 ```
@@ -179,7 +182,8 @@ p.run(resume=True)  # resume from last checkpoint
 | Resume | Checkpoint per phase — crash at phase 6, resume at phase 6 |
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
-| Test suite | 20 tests — schema, query, diff, pipeline, HYGEIA, provenance, security |
+| Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own |
+| Test suite | 21 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, security |
 | CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows), ruff, mypy, bandit |
 
 ---
