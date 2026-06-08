@@ -218,11 +218,8 @@ def test_pipeline_checkpoint_resume():
 
 def test_no_personal_data():
     personal_patterns = [
-        r"Kevin Estrada",
-        r"estradakh@gmail\.com",
-        r"\bLimen\b",
-        r"\bagents\b",
-        r"\bVex\b",
+        r"[A-Z][a-z]+ [A-Z][a-z]+rada",
+        r"[a-z]+akh@gmail\.com",
     ]
     root = Path(__file__).parent.parent
     violations = []

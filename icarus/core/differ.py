@@ -9,7 +9,7 @@ Five diff categories:
   DELETION        — entity exists in old, not in new
   PROPERTY_CHANGE — same entity, different attribute value
   STRUCTURAL      — relationship topology changed (edges, not nodes)
-  RESOLUTION_CHANGE — reserved for Phase 2 entity resolution (never produced in v1)
+  RESOLUTION_CHANGE — entity resolution changes (Phase 2)
 """
 
 import enum

@@ -108,7 +108,9 @@ class EntityResolver:
             (version_id, entity_type, source_key, json.dumps(properties), now),
         )
         self.conn.commit()
-        return cursor.lastrowid
+        atom_id = cursor.lastrowid
+        assert atom_id is not None
+        return atom_id
 
     def create_bag(
         self, entity_type: str, atom_ids: List[int], canonical_key: Optional[str] = None
@@ -121,6 +123,7 @@ class EntityResolver:
             (entity_type, canonical_key, now, len(atom_ids)),
         )
         bag_id = cursor.lastrowid
+        assert bag_id is not None
 
         for atom_id in atom_ids:
             self.conn.execute(
@@ -185,6 +188,7 @@ class EntityResolver:
             (entity_type, now, len(atom_ids_to_remove)),
         )
         new_bag_id = cursor.lastrowid
+        assert new_bag_id is not None
 
         for atom_id in atom_ids_to_remove:
             self.conn.execute(
