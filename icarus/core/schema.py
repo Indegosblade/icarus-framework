@@ -255,6 +255,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS daemons_fts USING fts5(
     label, program, mach_services, sandbox_profile,
     content='daemons', content_rowid='id'
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS atoms_fts USING fts5(
+    entity_type, source_key, properties,
+    content='atoms', content_rowid='id'
+);
 """
 
 FTS_TRIGGERS = """
@@ -290,6 +295,16 @@ CREATE TRIGGER IF NOT EXISTS daemons_au AFTER UPDATE ON daemons BEGIN
     VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
     INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
     VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
+END;
+
+CREATE TRIGGER IF NOT EXISTS atoms_ai AFTER INSERT ON atoms BEGIN
+    INSERT INTO atoms_fts(rowid, entity_type, source_key, properties)
+    VALUES (new.id, new.entity_type, new.source_key, new.properties);
+END;
+
+CREATE TRIGGER IF NOT EXISTS atoms_ad AFTER DELETE ON atoms BEGIN
+    INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
+    VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
 END;
 """
 
