@@ -151,7 +151,8 @@ def test_windows_parser():
     p = WindowsParser()
     assert p.name == "windows"
     assert p.get_required_tools() == []
-    assert not p.identify(Path(tempfile.gettempdir()))
+    with tempfile.TemporaryDirectory() as empty:
+        assert not p.identify(Path(empty))
 
 
 def test_linux_parser():

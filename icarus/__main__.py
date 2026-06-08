@@ -79,8 +79,21 @@ def cmd_parser(args):
         except Exception as e:
             print(f"FAIL: {manifest_path}\n  {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.parser_command == "list":
+        from icarus.parsers import get_registry
+        entries = get_registry().list_all()
+        if not entries:
+            print("No parsers registered.")
+            return
+        print(f"{'Name':<20} {'Tier':<12} {'Version':<10} {'Spec':<6} Description")
+        print("-" * 80)
+        for e in entries:
+            print(
+                f"{e['name']:<20} {e['tier']:<12} {e['version']:<10} "
+                f"{e['specificity']:<6} {e['description']}"
+            )
     else:
-        print("Unknown parser command. Use: validate", file=sys.stderr)
+        print("Unknown parser command. Use: validate, list", file=sys.stderr)
         sys.exit(1)
 
 
@@ -124,6 +137,7 @@ def main():
     parser_sub = parser_p.add_subparsers(dest="parser_command")
     validate_p = parser_sub.add_parser("validate", help="Validate a parser manifest")
     validate_p.add_argument("path", help="Path to parser.yaml manifest file")
+    parser_sub.add_parser("list", help="List all registered parsers")
 
     args = parser.parse_args()
     if not args.command:
