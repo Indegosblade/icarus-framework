@@ -55,14 +55,25 @@ class JsonParser(BaseParser):
                                     "SELECT id FROM files WHERE path=?", (rel,)
                                 ).fetchone()
                                 if file_row:
-                                    conn.execute(
-                                        "INSERT OR IGNORE INTO observations"
-                                        " (entity_table,entity_id,"
-                                        "observed_at,event_type,properties)"
-                                        " VALUES (?,?,datetime('now'),?,?)",
-                                        ("files", file_row[0], "json_keys",
-                                         keys),
-                                    )
+                                    dup = conn.execute(
+                                        "SELECT id FROM observations"
+                                        " WHERE entity_table=?"
+                                        " AND entity_id=?"
+                                        " AND event_type=?",
+                                        ("files", file_row[0],
+                                         "json_keys"),
+                                    ).fetchone()
+                                    if not dup:
+                                        conn.execute(
+                                            "INSERT INTO observations"
+                                            " (entity_table,entity_id,"
+                                            "observed_at,event_type,"
+                                            "properties)"
+                                            " VALUES"
+                                            " (?,?,datetime('now'),?,?)",
+                                            ("files", file_row[0],
+                                             "json_keys", keys),
+                                        )
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass
                     except (PermissionError, OSError):

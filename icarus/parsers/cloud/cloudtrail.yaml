@@ -1,0 +1,29 @@
+parser_id: "cloud/aws/cloudtrail"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"
+description: "AWS CloudTrail JSON audit log parser"
+identify:
+  specificity_level: 5
+  markers:
+    - type: "json_key"
+      path: "Records[0].eventVersion"
+    - type: "json_key"
+      path: "Records[0].eventSource"
+  confidence: 0.95
+consumes:
+  - "application/json"
+produces:
+  entity_types: ["files", "daemons", "observations"]
+  event_types: ["api_call", "console_login", "assume_role", "console_signin"]
+dependencies:
+  tools: []
+  python: []
+reliability: "A"
+default_confidence: 0.90
+tests:
+  fixtures_dir: "tests/fixtures/cloud_aws_cloudtrail/"
+  min_entities: 1
+  golden_output: "tests/golden/cloud_aws_cloudtrail.json"

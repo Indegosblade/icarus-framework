@@ -38,6 +38,27 @@ try:
 except ImportError:
     pass
 
+_CLOUD_PARSERS = [
+    ("icarus.parsers.cloud.cloudtrail", "CloudTrailParser",
+     "cloud/cloudtrail.yaml"),
+]
+
+for _mod_path, _cls_name, _yaml_name in _CLOUD_PARSERS:
+    try:
+        import importlib
+        _mod = importlib.import_module(_mod_path)
+        _cls = getattr(_mod, _cls_name)
+        _manifest = None
+        _yaml_path = _PARSERS_DIR / _yaml_name
+        if _yaml_path.exists():
+            try:
+                _manifest = load_manifest(_yaml_path)
+            except Exception:
+                pass
+        _REGISTRY.register(_cls, _manifest)
+    except ImportError:
+        pass
+
 _GENERIC_PARSERS = [
     ("icarus.parsers.generic.json_parser", "JsonParser", "generic/json_parser.yaml"),
     ("icarus.parsers.generic.xml_parser", "XmlParser", "generic/xml_parser.yaml"),
