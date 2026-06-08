@@ -145,7 +145,7 @@ The observations table uses a generic foreign key (`entity_table` + `entity_id`)
 
 ## Parser Architecture
 
-The framework is source-agnostic. Swap the parser, keep the engine.
+The framework is source-agnostic. Swap the parser, keep the engine. Each parser ships with a YAML manifest that declares its identity, quality tier, specificity, and test configuration — validated by JSON Schema at load time.
 
 ```python
 from icarus.parsers.base import BaseParser
@@ -164,6 +164,17 @@ class MyParser(BaseParser):
 
     def verify(self, db):
         """Quality gates — validate extraction completeness."""
+```
+
+```bash
+# List all registered parsers with tier, version, specificity
+icarus parser list
+
+# Validate a parser manifest
+icarus parser validate icarus/parsers/windows.yaml
+
+# Run the test harness (golden output, idempotency, schema, PII)
+icarus parser test windows
 ```
 
 | Data Source | What You Map | What You Find |
@@ -198,6 +209,9 @@ icarus query intel.db --stats
 
 # Diff two versions
 icarus diff old.db new.db --report changes.md
+
+# Export diff as STIX 2.1 bundle
+icarus diff old.db new.db --stix changes.json
 ```
 
 ```python
@@ -215,10 +229,10 @@ p.run(resume=True)  # resume from last checkpoint
 | Resume | Checkpoint per phase — crash at phase 6, resume at phase 6 |
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
-| Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own. Auto-detected from source. |
+| Parsers | 8 production parsers: Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary. Auto-detected from source via registry contest. |
 | Traversal | `os.walk` with error callbacks — handles broken symlinks, inaccessible paths, WSL artifacts |
 | Provenance | Pipeline auto-finalizes version records: entity_count + completed_at on every run |
-| Test suite | 43 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, entity resolution, observations |
+| Test suite | 77 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, entity resolution, observations, manifest, registry, harness, generics, CloudTrail, STIX |
 | CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows/macos), ruff, mypy, bandit |
 
 ---
@@ -319,6 +333,8 @@ pip install -e ".[dev]"
 - Python 3.10+
 - SQLite 3.35+ (FTS5 support)
 - [HYGEIA](https://github.com/Indegosblade/HYGEIA) (installed automatically as a dependency)
+- [PyYAML](https://pyyaml.org/) >=6.0 (parser manifest loading)
+- [jsonschema](https://python-jsonschema.readthedocs.io/) >=4.20 (manifest validation)
 
 ---
 
@@ -352,11 +368,18 @@ icarus-framework/
 │   │   └── resolver.py       # Entity resolution (Atom/Bag/EventLog)
 │   ├── parsers/
 │   │   ├── base.py           # Abstract parser interface
+│   │   ├── manifest.py       # YAML manifest loader + JSON Schema validation
+│   │   ├── testing.py        # Parser test harness (golden, idempotency, schema, PII)
 │   │   ├── windows.py        # Windows application/directory parser
-│   │   └── linux.py          # Linux filesystem/ELF binary parser
+│   │   ├── linux.py          # Linux filesystem/ELF binary parser
+│   │   ├── cloud/            # Cloud parsers (CloudTrail)
+│   │   ├── generic/          # Generic fallback parsers (JSON, XML, SQLite, Archive, Binary)
+│   │   ├── catalog/          # Two-tier parser catalog (production + candidate)
+│   │   └── schema/           # Parser manifest JSON Schema
 │   └── integrations/
-│       └── hygeia.py         # HYGEIA sanitization layer
-├── tests/                    # Pytest suite (43 tests)
+│       ├── hygeia.py         # HYGEIA sanitization layer
+│       └── stix_export.py    # STIX 2.1 export (entities + diffs)
+├── tests/                    # Pytest suite (77 tests)
 ├── examples/                 # Custom parser template (Linux)
 ├── schema/                   # Standalone SQL reference
 ├── about/                    # Architecture + parser development docs
@@ -369,7 +392,17 @@ icarus-framework/
 
 ## Changelog
 
-### v2.0.0 (latest)
+### v3.0.0 (latest)
+- **Parser ecosystem** — YAML manifest format (validated by JSON Schema), parser registry with most-specific-wins detection contest, two-tier catalog (production + candidate), parser test harness (golden output, idempotency, schema conformance, zero-PII)
+- **8 production parsers** — Windows, Linux, CloudTrail (cloud/aws), JSON, XML, SQLite, Archive, Binary Entropy. All with manifests, all registered, all tested.
+- **CloudTrail parser** — maps IAM identities to daemons, API events to observations. Idempotent, sanitized, Admiralty grade A.
+- **Generic fallback parsers** — 5 catch-all parsers at specificity 100 (any specific parser wins). Handle JSON, XML, SQLite, archives, and arbitrary binary directories.
+- **STIX 2.1 export** — `export_to_stix()` maps ICARUS entities to STIX SCOs/SDOs. `diff_to_stix()` exports version diffs as STIX bundles. CLI: `icarus diff old.db new.db --stix output.json`
+- **CLI: `icarus parser`** — `validate` (manifest validation), `list` (registry listing), `test` (harness runner)
+- **Dependencies declared** — `pyyaml>=6.0` and `jsonschema>=4.20` pinned in pyproject.toml
+- **77 tests** — 34 new tests covering manifests, registry, harness, generics, CloudTrail, STIX export
+
+### v2.0.0
 - **Entity resolution** — Atom/Bag/EventLog pattern: immutable atoms, reversible bag merge/split, append-only audit trail. `EntityResolver` class with `ingest_atom()`, `create_bag()`, `merge_bags()`, `split_bag()`, `resolve()`
 - **FTS5 blocking index** — `BlockingIndex` generates resolution candidates via tokenized full-text search. Auto-synced with triggers on atom insert/delete
 - **Observations event layer** — generic FK to any ontology entity. Temporal queries: `observations_for()`, `pattern_of_life()`, `first_seen()`, `cross_graph_query()`, `observation_diff()`
