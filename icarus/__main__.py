@@ -56,6 +56,12 @@ def cmd_query(args):
 
 
 def cmd_diff(args):
+    if args.stix:
+        from icarus.integrations.stix_export import diff_to_stix
+        bundle = diff_to_stix(Path(args.old), Path(args.new), Path(args.stix))
+        print(f"STIX bundle written to {args.stix} ({len(bundle['objects'])} objects)")
+        return
+
     from icarus.core.differ import IcarusDiffer
     with IcarusDiffer(args.old, args.new) as d:
         report = d.generate_report()
@@ -154,6 +160,7 @@ def main():
     diff_p.add_argument("old", help="Path to older database")
     diff_p.add_argument("new", help="Path to newer database")
     diff_p.add_argument("--output", "-o", help="Write report to file (default: stdout)")
+    diff_p.add_argument("--stix", help="Export diff as STIX 2.1 bundle JSON")
 
     # parser
     parser_p = sub.add_parser("parser", help="Parser management commands")
