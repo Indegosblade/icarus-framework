@@ -80,9 +80,9 @@ The framework doesn't know what a Windows ACL or a Linux capability is. The pars
 
 Not an afterthought. The differ attaches two databases and runs set-difference queries. What was added? Removed? Silently modified? This is where the real intelligence lives — single-version analysis finds what exists; cross-version analysis finds what changed.
 
-### 5. Sanitization Before Output
+### 5. Built-in Sanitization
 
-HYGEIA runs as a pipeline phase, not a post-processing step. The database is never "done" with PII in it — sanitization is part of completion. If HYGEIA fails, the pipeline fails.
+HYGEIA runs as a pipeline phase, not a post-processing step. PII is stripped before the database is marked complete.
 
 ### 6. Cell-Level Provenance
 

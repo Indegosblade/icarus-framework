@@ -1,5 +1,8 @@
 """ICARUS parsers — pluggable data source modules."""
 
+from pathlib import Path
+from typing import Optional
+
 from icarus.parsers.base import BaseParser
 
 PARSERS = {}
@@ -23,6 +26,17 @@ def get_parser(name: str) -> BaseParser:
         available = list(PARSERS.keys()) or ["(none registered)"]
         raise ValueError(f"Unknown parser: '{name}'. Available: {available}")
     return PARSERS[name]()
+
+
+def detect_parser(source: Path) -> Optional[str]:
+    """Auto-detect parser for a source path. Returns parser name or None."""
+    for name, cls in PARSERS.items():
+        try:
+            if cls().identify(source):
+                return name
+        except (PermissionError, OSError):
+            continue
+    return None
 
 
 def list_parsers() -> dict:

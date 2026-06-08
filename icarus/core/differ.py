@@ -88,8 +88,12 @@ class IcarusDiffer:
             raise FileNotFoundError(f"New database not found: {new_db}")
 
         self.conn = sqlite3.connect(str(self.new_path))
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("ATTACH DATABASE ? AS old_db", (str(self.old_path),))
+        try:
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("ATTACH DATABASE ? AS old_db", (str(self.old_path),))
+        except Exception:
+            self.conn.close()
+            raise
 
     def added_entities(self, table: str, key: str) -> DiffResult:
         """Entities present in new DB but not in old DB."""
