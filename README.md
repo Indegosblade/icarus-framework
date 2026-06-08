@@ -174,12 +174,14 @@ p.run(resume=True)  # resume from last checkpoint
 
 ## Database Schema
 
-10 normalized tables. 2 FTS indexes. 3 intelligence views.
+10 normalized tables. 2 FTS indexes. 3 intelligence views. Cell-level provenance on every entity.
 
 ```sql
--- Entities
+-- Entities (all carry provenance: source_version_id, confidence, observed_time, marking)
 files, binaries, daemons, entitlements,
-sandbox_profiles, sandbox_rules, kexts, frameworks,
+sandbox_profiles, sandbox_rules, kexts, frameworks
+
+-- Infrastructure
 metadata, versions
 
 -- Full-text search (auto-synced via triggers)
@@ -191,7 +193,7 @@ v_kernel_attack_surface
 v_test_binaries
 ```
 
-Every entity has typed attributes and foreign-key relationships. The schema is the ontology — entities don't float free, they connect.
+Every entity has typed attributes, foreign-key relationships, and provenance metadata. The schema is the ontology — entities don't float free, they connect. Every datum traces to the ingest run that produced it.
 
 ---
 
@@ -247,6 +249,7 @@ Parser-specific tools: iOS requires `ipsw` and `ldid`. Other parsers specify the
 | Principle | Why |
 |-----------|-----|
 | **Ontology-first** | Entities and relationships are the product. Everything else is infrastructure. |
+| **Provenance on every cell** | Every datum carries source, confidence, observation time, and access marking. Trace anything to the run that produced it. |
 | **Sanitization-first** | HYGEIA runs before output, not after. Clean by default. |
 | **Streaming** | Process records one-at-a-time. Never load full dataset into RAM. |
 | **Source-agnostic** | The framework doesn't know what your entities are. It knows they relate. |

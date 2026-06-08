@@ -34,7 +34,7 @@ def test_imports():
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
     assert __version__ == "1.0.0"
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
     assert len(VALID_TABLES) == 10
     assert len(VALID_FTS_TABLES) == 2
     assert "ios" in list_parsers()
@@ -44,7 +44,7 @@ def test_schema_init_and_fts(tmp_db):
     from icarus.core.schema import initialize_database
 
     stats = initialize_database(tmp_db, {"source": "test"})
-    assert stats["schema_version"] == 2
+    assert stats["schema_version"] == 3
     assert stats["tables"] > 8
 
     conn = sqlite3.connect(str(tmp_db))
@@ -231,3 +231,117 @@ def test_no_personal_data():
                 violations.append(f"{md_file.name}: matches {pat}")
 
     assert not violations, "Personal data found:\n" + "\n".join(violations)
+
+
+def test_provenance_columns_exist(tmp_db):
+    from icarus.core.schema import ENTITY_TABLES, initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+
+    for table in ENTITY_TABLES:
+        columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        col_names = {c[1] for c in columns}
+        assert "source_version_id" in col_names, f"{table} missing source_version_id"
+        assert "confidence" in col_names, f"{table} missing confidence"
+        assert "observed_time" in col_names, f"{table} missing observed_time"
+        assert "marking" in col_names, f"{table} missing marking"
+
+    conn.close()
+
+
+def test_versions_table_exists(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='versions'"
+    ).fetchall()
+    assert len(tables) == 1
+
+    columns = conn.execute("PRAGMA table_info(versions)").fetchall()
+    col_names = {c[1] for c in columns}
+    assert "run_id" in col_names
+    assert "parser_name" in col_names
+    assert "started_at" in col_names
+    conn.close()
+
+
+def test_marking_default(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 100, 'binary')
+    """)
+    conn.commit()
+
+    row = conn.execute("SELECT marking FROM files WHERE path = '/usr/bin/test'").fetchone()
+    assert row[0] == "UNCLASSIFIED"
+    conn.close()
+
+
+def test_migration_v2_to_v3(tmp_db):
+    from icarus.core.schema import migrate_v2_to_v3
+
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+            extension TEXT, size INTEGER DEFAULT 0, file_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS binaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL, bundle_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daemons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL UNIQUE,
+            plist_path TEXT NOT NULL, program TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entitlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, binary_id INTEGER NOT NULL,
+            key TEXT NOT NULL, value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL,
+            operation TEXT NOT NULL, action TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, bundle_id TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS frameworks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE
+        );
+        INSERT INTO metadata VALUES ('schema_version', '2');
+        INSERT INTO files (path, filename, size, file_type) VALUES ('/bin/ls', 'ls', 500, 'binary');
+    """)
+    conn.commit()
+
+    migrate_v2_to_v3(conn)
+
+    version = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "3"
+
+    row = conn.execute("SELECT confidence, marking FROM files WHERE path = '/bin/ls'").fetchone()
+    assert row[0] == 1.0
+    assert row[1] == "UNCLASSIFIED"
+
+    tables = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='versions'"
+    ).fetchall()
+    assert len(tables) == 1
+
+    conn.close()
