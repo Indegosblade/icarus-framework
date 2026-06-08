@@ -169,6 +169,18 @@ CREATE TABLE IF NOT EXISTS versions (
     entity_count INTEGER DEFAULT 0,
     metadata TEXT
 );
+
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_table TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    observer TEXT,
+    event_type TEXT NOT NULL,
+    properties TEXT,
+    version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0
+);
 """
 
 INDEXES = """
@@ -188,6 +200,9 @@ CREATE INDEX IF NOT EXISTS idx_rules_profile ON sandbox_rules(profile_id);
 CREATE INDEX IF NOT EXISTS idx_rules_operation ON sandbox_rules(operation);
 CREATE INDEX IF NOT EXISTS idx_kexts_bundle ON kexts(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_frameworks_name ON frameworks(name);
+CREATE INDEX IF NOT EXISTS idx_obs_entity ON observations(entity_table, entity_id);
+CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(event_type);
 """
 
 FTS_SCHEMA = """

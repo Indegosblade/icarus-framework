@@ -155,6 +155,40 @@ class IcarusQuery:
         result.query_name = "Sandbox Escape Surface"
         return result
 
+    def observations_for(
+        self, entity_table: str, entity_id: int
+    ) -> QueryResult:
+        """All observations for a specific entity."""
+        result = self.execute(
+            "SELECT * FROM observations WHERE entity_table = ? AND entity_id = ? "
+            "ORDER BY observed_at",
+            (entity_table, entity_id),
+        )
+        result.query_name = f"Observations for {entity_table}:{entity_id}"
+        return result
+
+    def pattern_of_life(
+        self, entity_table: str, entity_id: int, start: str, end: str
+    ) -> QueryResult:
+        """Observations for an entity within a time window."""
+        result = self.execute(
+            "SELECT * FROM observations WHERE entity_table = ? AND entity_id = ? "
+            "AND observed_at >= ? AND observed_at <= ? ORDER BY observed_at",
+            (entity_table, entity_id, start, end),
+        )
+        result.query_name = f"Pattern of Life: {entity_table}:{entity_id}"
+        return result
+
+    def first_seen(self, entity_table: str, entity_id: int) -> QueryResult:
+        """Earliest observation for a specific entity."""
+        result = self.execute(
+            "SELECT * FROM observations WHERE entity_table = ? AND entity_id = ? "
+            "ORDER BY observed_at ASC LIMIT 1",
+            (entity_table, entity_id),
+        )
+        result.query_name = f"First Seen: {entity_table}:{entity_id}"
+        return result
+
     def stats(self) -> Dict[str, int]:
         """Database statistics."""
         counts = {}
