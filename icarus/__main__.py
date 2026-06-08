@@ -116,10 +116,10 @@ def cmd_parser(args):
             return
         print(f"{'Name':<20} {'Tier':<12} {'Version':<10} {'Spec':<6} Description")
         print("-" * 80)
-        for e in entries:
+        for entry in entries:
             print(
-                f"{e['name']:<20} {e['tier']:<12} {e['version']:<10} "
-                f"{e['specificity']:<6} {e['description']}"
+                f"{entry['name']:<20} {entry['tier']:<12} {entry['version']:<10} "
+                f"{entry['specificity']:<6} {entry['description']}"
             )
     else:
         print("Unknown parser command. Use: validate, list, test", file=sys.stderr)

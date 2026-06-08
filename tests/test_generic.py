@@ -39,21 +39,35 @@ def test_generic_json_extracts():
 def test_generic_sqlite_identifies():
     from icarus.parsers.generic.sqlite_parser import SqliteParser
     p = SqliteParser()
-    assert p.identify(FIXTURES_DIR / "generic_sqlite")
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "test.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        assert p.identify(Path(d))
 
 
 def test_generic_sqlite_extracts():
     from icarus.parsers.generic.sqlite_parser import SqliteParser
-    db = _run_parser_on_fixture(SqliteParser(), FIXTURES_DIR / "generic_sqlite")
-    try:
-        conn = sqlite3.connect(str(db))
-        count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        assert count == 1
-        obs = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
-        assert obs >= 1
+    with tempfile.TemporaryDirectory() as fixture:
+        fixture_path = Path(fixture)
+        src_db = fixture_path / "test.db"
+        conn = sqlite3.connect(str(src_db))
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO users VALUES (1, 'test')")
+        conn.commit()
         conn.close()
-    finally:
-        db.unlink(missing_ok=True)
+        db = _run_parser_on_fixture(SqliteParser(), fixture_path)
+        try:
+            out = sqlite3.connect(str(db))
+            count = out.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            assert count == 1
+            obs = out.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
+            assert obs >= 1
+            out.close()
+        finally:
+            db.unlink(missing_ok=True)
 
 
 def test_generic_specificity_loses_to_windows():
@@ -77,18 +91,29 @@ def test_generic_zero_pii_all():
     from icarus.parsers.generic.sqlite_parser import SqliteParser
     from icarus.parsers.generic.xml_parser import XmlParser
 
-    parsers = [
+    simple_parsers = [
         (JsonParser(), "generic_json"),
         (XmlParser(), "generic_xml"),
-        (SqliteParser(), "generic_sqlite"),
         (ArchiveParser(), "generic_archive"),
         (BinaryEntropyParser(), "generic_binary"),
     ]
-    for parser, fixture_name in parsers:
+    for parser, fixture_name in simple_parsers:
         fixture_dir = FIXTURES_DIR / fixture_name
         db = _run_parser_on_fixture(parser, fixture_dir)
         try:
             result = verify_clean(db)
             assert result["passed"], f"{parser.name} failed zero-PII: {result['findings'][:3]}"
+        finally:
+            db.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as d:
+        src_db = Path(d) / "test.db"
+        conn = sqlite3.connect(str(src_db))
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        db = _run_parser_on_fixture(SqliteParser(), Path(d))
+        try:
+            result = verify_clean(db)
+            assert result["passed"], f"generic/sqlite failed zero-PII: {result['findings'][:3]}"
         finally:
             db.unlink(missing_ok=True)

@@ -5,9 +5,59 @@ Manages the normalized relational model: entities, relationships,
 attributes, FTS5 full-text search, and materialized views.
 """
 
+import platform
 import sqlite3
 from pathlib import Path
 from typing import Optional
+
+
+def _get_system_ram_bytes() -> int:
+    """Detect total system RAM. Returns bytes, or 0 on failure."""
+    try:
+        system = platform.system()
+        if system == "Linux":
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) * 1024
+        elif system == "Darwin":
+            import subprocess
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+            return int(out.strip())
+        elif system == "Windows":
+            import ctypes
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(stat)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            return stat.ullTotalPhys
+    except Exception:
+        pass
+    return 0
+
+
+def _apply_performance_pragmas(conn: sqlite3.Connection) -> None:
+    """Set SQLite cache and mmap based on 70% of system RAM."""
+    ram = _get_system_ram_bytes()
+    if ram > 0:
+        target = int(ram * 0.7)
+        cache_kb = target // 1024
+        conn.execute(f"PRAGMA cache_size = -{cache_kb}")
+        conn.execute(f"PRAGMA mmap_size = {target}")
+    else:
+        conn.execute("PRAGMA cache_size = -2097152")
+        conn.execute("PRAGMA mmap_size = 8589934592")
 
 SCHEMA_VERSION = 4
 
@@ -19,8 +69,6 @@ ENTITY_TABLES = (
 CORE_SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
-PRAGMA cache_size = -2097152;
-PRAGMA mmap_size = 8589934592;
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -486,6 +534,8 @@ def initialize_database(db_path: Path, metadata: dict = None) -> dict:
             conn.executescript(FTS_SCHEMA)
             conn.executescript(FTS_TRIGGERS)
             conn.executescript(VIEWS)
+
+        _apply_performance_pragmas(conn)
 
         conn.execute(
             "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
