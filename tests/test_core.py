@@ -36,7 +36,7 @@ def test_imports():
     assert __version__ == "2.0.0"
     assert SCHEMA_VERSION == 4
     assert len(VALID_TABLES) == 15
-    assert len(VALID_FTS_TABLES) == 2
+    assert len(VALID_FTS_TABLES) == 3
     assert "windows" in list_parsers()
     assert "linux" in list_parsers()
 

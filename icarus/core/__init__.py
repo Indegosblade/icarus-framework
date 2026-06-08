@@ -9,7 +9,7 @@ VALID_TABLES = frozenset({
     "observations", "atoms", "bags", "bag_atoms", "resolution_event_log",
 })
 
-VALID_FTS_TABLES = frozenset({"files", "daemons"})
+VALID_FTS_TABLES = frozenset({"files", "daemons", "atoms"})
 
 _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
