@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 ENTITY_TABLES = (
     "files", "binaries", "daemons", "entitlements",
@@ -368,6 +368,92 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Additive migration: adds Phase 2 tables — observations, atoms, bags, resolution_event_log."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_table TEXT NOT NULL,
+            entity_id INTEGER NOT NULL,
+            observed_at TEXT NOT NULL,
+            observer TEXT,
+            event_type TEXT NOT NULL,
+            properties TEXT,
+            version_id INTEGER REFERENCES versions(id),
+            confidence REAL DEFAULT 1.0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS atoms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_version_id INTEGER NOT NULL REFERENCES versions(id),
+            entity_type TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            properties TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(source_version_id, entity_type, source_key)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            canonical_key TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            atom_count INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bag_atoms (
+            bag_id INTEGER NOT NULL REFERENCES bags(id),
+            atom_id INTEGER NOT NULL REFERENCES atoms(id),
+            PRIMARY KEY(bag_id, atom_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS resolution_event_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            bag_id INTEGER NOT NULL REFERENCES bags(id),
+            atom_ids TEXT NOT NULL,
+            reason TEXT,
+            confidence REAL,
+            operator TEXT,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_obs_entity "
+        "ON observations(entity_table, entity_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(event_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id)")
+    conn.executescript("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS atoms_fts USING fts5(
+            entity_type, source_key, properties,
+            content='atoms', content_rowid='id'
+        );
+        CREATE TRIGGER IF NOT EXISTS atoms_ai AFTER INSERT ON atoms BEGIN
+            INSERT INTO atoms_fts(rowid, entity_type, source_key, properties)
+            VALUES (new.id, new.entity_type, new.source_key, new.properties);
+        END;
+        CREATE TRIGGER IF NOT EXISTS atoms_ad AFTER DELETE ON atoms BEGIN
+            INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
+            VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
+        END;
+    """)
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("schema_version", "4")
+    )
+    conn.commit()
+
+
 def initialize_database(db_path: Path, metadata: dict = None) -> dict:
     """
     Create and initialize an ICARUS database.
@@ -389,6 +475,9 @@ def initialize_database(db_path: Path, metadata: dict = None) -> dict:
 
     if existing_version == 2:
         migrate_v2_to_v3(conn)
+        migrate_v3_to_v4(conn)
+    elif existing_version == 3:
+        migrate_v3_to_v4(conn)
     elif existing_version is None or existing_version < 2:
         conn.executescript(CORE_SCHEMA)
         conn.executescript(INDEXES)
