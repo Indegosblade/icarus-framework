@@ -80,6 +80,18 @@ Not an afterthought. The differ attaches two databases and runs set-difference q
 
 HYGEIA runs as a pipeline phase, not a post-processing step. The database is never "done" with PII in it — sanitization is part of completion. If HYGEIA fails, the pipeline fails.
 
+### 6. Cell-Level Provenance
+
+Every entity row carries four provenance fields:
+- `source_version_id` — which ingest run produced this datum (FK to `versions` table)
+- `confidence` — 0.0–1.0, how certain the parser is about this entity
+- `observed_time` — ISO 8601 timestamp of when this was observed
+- `marking` — access classification: `UNCLASSIFIED`, `PII`, `SENSITIVE`, `REDACTED`
+
+The `versions` table records every pipeline run: UUID, parser name, source path, timestamps, entity count. Any row in any entity table traces back to the run that created it.
+
+HYGEIA can update markings after sanitization: `PII` → `REDACTED`. The marking lifecycle is: default UNCLASSIFIED → scanner flags PII → HYGEIA sanitizes → marking updated to REDACTED.
+
 ---
 
 ## Extension Points

@@ -9,7 +9,12 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+ENTITY_TABLES = (
+    "files", "binaries", "daemons", "entitlements",
+    "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
+)
 
 CORE_SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -33,7 +38,11 @@ CREATE TABLE IF NOT EXISTS files (
     sha256 TEXT,
     file_type TEXT,
     is_symlink INTEGER DEFAULT 0,
-    symlink_target TEXT
+    symlink_target TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS binaries (
@@ -51,7 +60,11 @@ CREATE TABLE IF NOT EXISTS binaries (
     segments TEXT,
     has_restrict INTEGER DEFAULT 0,
     has_pie INTEGER DEFAULT 1,
-    is_encrypted INTEGER DEFAULT 0
+    is_encrypted INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS daemons (
@@ -68,7 +81,11 @@ CREATE TABLE IF NOT EXISTS daemons (
     mach_services TEXT,
     binary_id INTEGER REFERENCES binaries(id),
     is_disabled INTEGER DEFAULT 0,
-    session_type TEXT
+    session_type TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS entitlements (
@@ -76,7 +93,11 @@ CREATE TABLE IF NOT EXISTS entitlements (
     binary_id INTEGER NOT NULL REFERENCES binaries(id),
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    value_type TEXT
+    value_type TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS sandbox_profiles (
@@ -86,7 +107,11 @@ CREATE TABLE IF NOT EXISTS sandbox_profiles (
     raw_sbpl TEXT,
     rule_count INTEGER DEFAULT 0,
     allows_network INTEGER DEFAULT 0,
-    allows_mach_lookup INTEGER DEFAULT 0
+    allows_mach_lookup INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS sandbox_rules (
@@ -96,7 +121,11 @@ CREATE TABLE IF NOT EXISTS sandbox_rules (
     action TEXT NOT NULL,
     filter_type TEXT,
     filter_value TEXT,
-    requires TEXT
+    requires TEXT,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS kexts (
@@ -108,7 +137,11 @@ CREATE TABLE IF NOT EXISTS kexts (
     dependencies TEXT,
     personalities TEXT,
     iokit_classes TEXT,
-    has_user_client INTEGER DEFAULT 0
+    has_user_client INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
 CREATE TABLE IF NOT EXISTS frameworks (
@@ -119,7 +152,22 @@ CREATE TABLE IF NOT EXISTS frameworks (
     version TEXT,
     is_private INTEGER DEFAULT 0,
     binary_id INTEGER REFERENCES binaries(id),
-    exported_symbols_count INTEGER DEFAULT 0
+    exported_symbols_count INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
+);
+
+CREATE TABLE IF NOT EXISTS versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE,
+    parser_name TEXT NOT NULL,
+    source_path TEXT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    entity_count INTEGER DEFAULT 0,
+    metadata TEXT
 );
 """
 
@@ -223,19 +271,65 @@ WHERE f.path LIKE '%/test%' OR f.path LIKE '%/debug%'
 """
 
 
+def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """Additive migration: adds versions table and provenance columns."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL UNIQUE,
+            parser_name TEXT NOT NULL,
+            source_path TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            entity_count INTEGER DEFAULT 0,
+            metadata TEXT
+        )
+    """)
+    for table in ENTITY_TABLES:
+        for col, typedef in [
+            ("source_version_id", "INTEGER"),
+            ("confidence", "REAL DEFAULT 1.0"),
+            ("observed_time", "TEXT"),
+            ("marking", "TEXT DEFAULT 'UNCLASSIFIED'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE [{table}] ADD COLUMN {col} {typedef}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("schema_version", "3")
+    )
+    conn.commit()
+
+
 def initialize_database(db_path: Path, metadata: dict = None) -> dict:
     """
     Create and initialize an ICARUS database.
 
+    Handles fresh creation (v3) and migration from existing v2 databases.
     Returns stats dict with table count and schema version.
     """
     conn = sqlite3.connect(str(db_path))
 
-    conn.executescript(CORE_SCHEMA)
-    conn.executescript(INDEXES)
-    conn.executescript(FTS_SCHEMA)
-    conn.executescript(FTS_TRIGGERS)
-    conn.executescript(VIEWS)
+    existing_version = None
+    try:
+        row = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        if row:
+            existing_version = int(row[0])
+    except sqlite3.OperationalError:
+        pass
+
+    if existing_version == 2:
+        migrate_v2_to_v3(conn)
+    elif existing_version is None or existing_version < 2:
+        conn.executescript(CORE_SCHEMA)
+        conn.executescript(INDEXES)
+        conn.executescript(FTS_SCHEMA)
+        conn.executescript(FTS_TRIGGERS)
+        conn.executescript(VIEWS)
 
     conn.execute(
         "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
