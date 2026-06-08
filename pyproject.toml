@@ -8,33 +8,60 @@ version = "1.0.0"
 description = "Modular intelligence framework for structured data analysis"
 readme = "README.md"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "Indegosblade"},
 ]
-keywords = ["intelligence", "analysis", "sqlite", "diffing", "security", "firmware"]
+keywords = ["intelligence", "analysis", "sqlite", "diffing", "security", "ontology", "entities"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Information Analysis",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Indegosblade/icarus-framework"
 Repository = "https://github.com/Indegosblade/icarus-framework"
 Issues = "https://github.com/Indegosblade/icarus-framework/issues"
 
 [project.scripts]
 icarus = "icarus.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "bandit>=1.7",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+disable_error_code = ["operator", "attr-defined", "var-annotated", "index", "assignment"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B101", "B112", "B404", "B603", "B607", "B608"]
 
 [tool.setuptools.packages.find]
 include = ["icarus*"]

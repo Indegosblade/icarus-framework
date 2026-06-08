@@ -53,10 +53,12 @@ def main():
 
     # build
     build_p = sub.add_parser("build", help="Build an intelligence database from a data source")
-    build_p.add_argument("--source", "-s", required=True, help="Path to data source (e.g., iOS rootfs)")
+    build_p.add_argument(
+        "--source", "-s", required=True, help="Path to data source (e.g., iOS rootfs)")
     build_p.add_argument("--output", "-o", required=True, help="Output database path")
     build_p.add_argument("--parser", "-p", default="ios", help="Parser to use (default: ios)")
-    build_p.add_argument("--fresh", action="store_true", help="Ignore checkpoints, start from scratch")
+    build_p.add_argument(
+        "--fresh", action="store_true", help="Ignore checkpoints, start from scratch")
 
     # query
     query_p = sub.add_parser("query", help="Query an intelligence database")

@@ -5,11 +5,11 @@ Processes data sources through a configurable sequence of phases,
 saving progress at each checkpoint. Crash at phase N? Resume from phase N.
 """
 
+import json
 import sqlite3
 import time
-import json
 from pathlib import Path
-from typing import Optional, List, Callable
+from typing import Callable, List, Optional
 
 
 class PipelinePhase:
@@ -139,9 +139,9 @@ class Pipeline:
 
 def create_default_pipeline(source: Path, output: Path, parser_name: str = "ios"):
     """Create a pipeline with the standard phase sequence."""
-    from icarus.parsers import get_parser
     from icarus.core.schema import initialize_database
     from icarus.integrations.hygeia import sanitize_output
+    from icarus.parsers import get_parser
 
     pipeline = Pipeline(source, output, parser_name)
     parser = get_parser(parser_name)
@@ -150,8 +150,10 @@ def create_default_pipeline(source: Path, output: Path, parser_name: str = "ios"
                        "Initialize SQLite database and schema")
     pipeline.add_phase("ingest", lambda ctx: parser.extract_entities(ctx.source, ctx.output_db),
                        "Walk source and extract entities")
-    pipeline.add_phase("relationships", lambda ctx: parser.extract_relationships(ctx.source, ctx.output_db),
-                       "Map relationships between entities")
+    pipeline.add_phase(
+        "relationships",
+        lambda ctx: parser.extract_relationships(ctx.source, ctx.output_db),
+        "Map relationships between entities")
     pipeline.add_phase("verify", lambda ctx: parser.verify(ctx.output_db),
                        "Quality gates and verification")
     pipeline.add_phase("sanitize", lambda ctx: sanitize_output(ctx.output_db),

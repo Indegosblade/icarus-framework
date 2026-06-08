@@ -6,9 +6,8 @@ logic with whatever your data source requires.
 """
 
 import sqlite3
-import hashlib
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 from icarus.parsers.base import BaseParser
 

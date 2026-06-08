@@ -11,13 +11,13 @@ Extracts entities from an iOS rootfs (extracted IPSW or jailbroken device dump):
 - System and Private frameworks
 """
 
-import sqlite3
-import subprocess
 import hashlib
 import json
 import plistlib
+import sqlite3
+import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from icarus.parsers.base import BaseParser
 

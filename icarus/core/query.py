@@ -6,9 +6,10 @@ for common patterns (privilege escalation surface, anomalies, etc.).
 """
 
 import sqlite3
-import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
+from icarus.core import VALID_FTS_TABLES, VALID_TABLES
 
 
 class QueryResult:
@@ -52,19 +53,6 @@ class QueryResult:
         return "\n".join(lines)
 
 
-VALID_TABLES = frozenset({
-    "files", "binaries", "daemons", "entitlements",
-    "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
-    "metadata", "versions",
-})
-
-VALID_FTS_TABLES = frozenset({"files", "daemons"})
-
-
-def _validate_identifier(name: str, allowed: frozenset, kind: str = "table") -> str:
-    if name not in allowed:
-        raise ValueError(f"Invalid {kind} name: {name!r}")
-    return name
 
 
 class IcarusQuery:
@@ -90,7 +78,8 @@ class IcarusQuery:
 
     def search(self, query: str, table: str = "files") -> QueryResult:
         """Full-text search via FTS5."""
-        table = _validate_identifier(table, VALID_FTS_TABLES)
+        if table not in VALID_FTS_TABLES:
+            raise ValueError(f"Invalid FTS table: {table!r}")
         fts_table = f"{table}_fts"
         sql = f"""
             SELECT * FROM {table}
