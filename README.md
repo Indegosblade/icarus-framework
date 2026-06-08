@@ -1,6 +1,9 @@
 # ICARUS
 
-![v1.2.0](https://img.shields.io/badge/version-1.2.0-blue) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-green) ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange) ![CI](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=flat)
+![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange?style=flat)
 
 **An ontology framework that maps hidden relationships in structured data.**
 
