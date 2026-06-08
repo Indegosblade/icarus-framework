@@ -33,8 +33,8 @@ def test_imports():
     from icarus.core import VALID_FTS_TABLES, VALID_TABLES
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
-    assert __version__ == "1.2.0"
-    assert SCHEMA_VERSION == 3
+    assert __version__ == "2.0.0"
+    assert SCHEMA_VERSION == 4
     assert len(VALID_TABLES) == 15
     assert len(VALID_FTS_TABLES) == 2
     assert "windows" in list_parsers()
@@ -45,7 +45,7 @@ def test_schema_init_and_fts(tmp_db):
     from icarus.core.schema import initialize_database
 
     stats = initialize_database(tmp_db, {"source": "test"})
-    assert stats["schema_version"] == 3
+    assert stats["schema_version"] == 4
     assert stats["tables"] > 8
 
     conn = sqlite3.connect(str(tmp_db))
@@ -632,7 +632,9 @@ def test_atoms_fts_trigger(tmp_db):
         r.ingest_atom(1, "files", "server_config", {"name": "nginx.conf", "role": "webserver"})
 
     conn = sqlite3.connect(str(tmp_db))
-    rows = conn.execute("SELECT rowid FROM atoms_fts WHERE atoms_fts MATCH 'server_config'").fetchall()
+    rows = conn.execute(
+        "SELECT rowid FROM atoms_fts WHERE atoms_fts MATCH 'server_config'"
+    ).fetchall()
     assert len(rows) == 1
     conn.close()
 
@@ -641,9 +643,18 @@ def test_blocking_candidates(tmp_db):
     from icarus.core.resolver import BlockingIndex, EntityResolver
     _setup_resolver_db(tmp_db)
     with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(1, "files", "nginx_config", {"name": "nginx.conf", "type": "config"})
-        a2 = r.ingest_atom(1, "files", "nginx_binary", {"name": "nginx", "type": "binary"})
-        a3 = r.ingest_atom(1, "files", "postgres_config", {"name": "postgres.conf", "type": "config"})
+        a1 = r.ingest_atom(
+            1, "files", "nginx_config",
+            {"name": "nginx.conf", "type": "config"},
+        )
+        r.ingest_atom(
+            1, "files", "nginx_binary",
+            {"name": "nginx", "type": "binary"},
+        )
+        r.ingest_atom(
+            1, "files", "postgres_config",
+            {"name": "postgres.conf", "type": "config"},
+        )
 
     with BlockingIndex(str(tmp_db)) as bi:
         candidates = bi.candidates_for(a1)
@@ -886,5 +897,75 @@ def test_migration_v2_to_v3(tmp_db):
         "SELECT name FROM sqlite_master WHERE type='table' AND name='versions'"
     ).fetchall()
     assert len(tables) == 1
+
+    conn.close()
+
+
+def test_migration_v3_to_v4(tmp_db):
+    from icarus.core.schema import migrate_v2_to_v3, migrate_v3_to_v4
+
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+            extension TEXT, size INTEGER DEFAULT 0, file_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS binaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL, bundle_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daemons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL UNIQUE,
+            plist_path TEXT NOT NULL, program TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entitlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, binary_id INTEGER NOT NULL,
+            key TEXT NOT NULL, value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL,
+            operation TEXT NOT NULL, action TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, bundle_id TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS frameworks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE
+        );
+        INSERT INTO metadata VALUES ('schema_version', '2');
+        INSERT INTO files (path, filename, size, file_type) VALUES ('/bin/ls', 'ls', 500, 'binary');
+    """)
+    conn.commit()
+
+    migrate_v2_to_v3(conn)
+    migrate_v3_to_v4(conn)
+
+    version = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "4"
+
+    phase2_tables = {"observations", "atoms", "bags", "bag_atoms", "resolution_event_log"}
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    for t in phase2_tables:
+        assert t in existing, f"Missing table after v3->v4 migration: {t}"
+
+    triggers = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'"
+    ).fetchall()}
+    assert "atoms_ai" in triggers
+    assert "atoms_ad" in triggers
+
+    row = conn.execute("SELECT confidence, marking FROM files WHERE path = '/bin/ls'").fetchone()
+    assert row[0] == 1.0
+    assert row[1] == "UNCLASSIFIED"
 
     conn.close()

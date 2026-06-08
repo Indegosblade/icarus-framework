@@ -103,8 +103,8 @@ class EntityResolver:
         """Create an immutable atom. Returns atom_id."""
         now = datetime.now(timezone.utc).isoformat()
         cursor = self.conn.execute(
-            "INSERT INTO atoms (source_version_id, entity_type, source_key, properties, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO atoms (source_version_id, entity_type, source_key, "
+            "properties, created_at) VALUES (?, ?, ?, ?, ?)",
             (version_id, entity_type, source_key, json.dumps(properties), now),
         )
         self.conn.commit()
@@ -232,7 +232,7 @@ class EntityResolver:
         atoms_resolved = 0
         for cluster_key, atom_ids in clusters.items():
             if len(atom_ids) >= 2:
-                bag_id = self.create_bag(entity_type, atom_ids, canonical_key=cluster_key)
+                self.create_bag(entity_type, atom_ids, canonical_key=cluster_key)
                 merges += 1
                 atoms_resolved += len(atom_ids)
             else:
