@@ -1,4 +1,4 @@
--- ICARUS Database Schema (v3)
+-- ICARUS Database Schema (v4)
 -- Modular intelligence framework for structured data analysis
 -- SQLite 3.35+ required (FTS5 support)
 
@@ -168,6 +168,62 @@ CREATE TABLE IF NOT EXISTS frameworks (
 );
 
 -- ============================================================
+-- Event Layer: Observations
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_table TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    observer TEXT,
+    event_type TEXT NOT NULL,
+    properties TEXT,
+    version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0
+);
+
+-- ============================================================
+-- Entity Resolution: Atom/Bag/EventLog
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS atoms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_version_id INTEGER NOT NULL REFERENCES versions(id),
+    entity_type TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    properties TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(source_version_id, entity_type, source_key)
+);
+
+CREATE TABLE IF NOT EXISTS bags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    canonical_key TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    atom_count INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS bag_atoms (
+    bag_id INTEGER NOT NULL REFERENCES bags(id),
+    atom_id INTEGER NOT NULL REFERENCES atoms(id),
+    PRIMARY KEY(bag_id, atom_id)
+);
+
+CREATE TABLE IF NOT EXISTS resolution_event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    bag_id INTEGER NOT NULL REFERENCES bags(id),
+    atom_ids TEXT NOT NULL,
+    reason TEXT,
+    confidence REAL,
+    operator TEXT,
+    timestamp TEXT NOT NULL
+);
+
+-- ============================================================
 -- Indexes
 -- ============================================================
 
@@ -187,6 +243,13 @@ CREATE INDEX IF NOT EXISTS idx_rules_profile ON sandbox_rules(profile_id);
 CREATE INDEX IF NOT EXISTS idx_rules_operation ON sandbox_rules(operation);
 CREATE INDEX IF NOT EXISTS idx_kexts_bundle ON kexts(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_frameworks_name ON frameworks(name);
+CREATE INDEX IF NOT EXISTS idx_obs_entity ON observations(entity_table, entity_id);
+CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(event_type);
+CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type);
+CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id);
+CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type);
+CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id);
 
 -- ============================================================
 -- Full-Text Search
@@ -200,6 +263,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
 CREATE VIRTUAL TABLE IF NOT EXISTS daemons_fts USING fts5(
     label, program, mach_services, sandbox_profile,
     content='daemons', content_rowid='id'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS atoms_fts USING fts5(
+    entity_type, source_key, properties,
+    content='atoms', content_rowid='id'
 );
 
 -- ============================================================
@@ -267,4 +335,14 @@ CREATE TRIGGER IF NOT EXISTS daemons_au AFTER UPDATE ON daemons BEGIN
     VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
     INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
     VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
+END;
+
+CREATE TRIGGER IF NOT EXISTS atoms_ai AFTER INSERT ON atoms BEGIN
+    INSERT INTO atoms_fts(rowid, entity_type, source_key, properties)
+    VALUES (new.id, new.entity_type, new.source_key, new.properties);
+END;
+
+CREATE TRIGGER IF NOT EXISTS atoms_ad AFTER DELETE ON atoms BEGIN
+    INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
+    VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
 END;

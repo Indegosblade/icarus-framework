@@ -9,31 +9,31 @@ ICARUS is built on one observation: structured data sources contain implicit rel
 ## Component Map
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                    PIPELINE                            │
-│  Phase orchestrator, checkpoint/resume, streaming     │
-├──────────────────────────────────────────────────────┤
-│         │              │              │               │
-│    ┌────▼────┐    ┌────▼────┐    ┌────▼────┐        │
-│    │ PARSER  │    │ SCHEMA  │    │  QUERY  │        │
-│    │ (plug)  │    │ Manager │    │ Engine  │        │
-│    └────┬────┘    └────┬────┘    └────┬────┘        │
-│         │              │              │               │
-│         └──────────────┼──────────────┘               │
-│                        │                              │
-│                   ┌────▼────┐                         │
-│                   │ SQLite  │  Single-file DB         │
-│                   │  + FTS5 │  Full-text search       │
-│                   └────┬────┘                         │
-│                        │                              │
-│              ┌─────────┼─────────┐                    │
-│              │                   │                    │
-│         ┌────▼────┐        ┌────▼────┐               │
-│         │ DIFFER  │        │ HYGEIA  │               │
-│         │ Cross-  │        │ Sanitize│               │
-│         │ version │        │ Output  │               │
-│         └─────────┘        └─────────┘               │
-└──────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                         PIPELINE                                   │
+│  Phase orchestrator, checkpoint/resume, streaming                 │
+├───────────────────────────────────────────────────────────────────┤
+│         │              │              │               │            │
+│    ┌────▼────┐    ┌────▼────┐    ┌────▼────┐    ┌────▼────┐     │
+│    │ PARSER  │    │ SCHEMA  │    │  QUERY  │    │RESOLVER │     │
+│    │ (plug)  │    │ Manager │    │ Engine  │    │ Entity  │     │
+│    └────┬────┘    └────┬────┘    └────┬────┘    │ Resolve │     │
+│         │              │              │          └────┬────┘     │
+│         └──────────────┼──────────────┼──────────────┘           │
+│                        │              │                           │
+│                   ┌────▼────┐    ┌────▼────────┐                 │
+│                   │ SQLite  │    │ TWO-GRAPH   │                 │
+│                   │  + FTS5 │    │ Ontology +  │                 │
+│                   └────┬────┘    │ Event Graph │                 │
+│                        │         └─────────────┘                 │
+│              ┌─────────┼─────────┐                               │
+│              │                   │                               │
+│         ┌────▼────┐        ┌────▼────┐                          │
+│         │ DIFFER  │        │ HYGEIA  │                          │
+│         │ Cross-  │        │ Sanitize│                          │
+│         │ version │        │ Output  │                          │
+│         └─────────┘        └─────────┘                          │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -91,6 +91,25 @@ Every entity row carries four provenance fields:
 The `versions` table records every pipeline run: UUID, parser name, source path, timestamps, entity count. Any row in any entity table traces back to the run that created it.
 
 HYGEIA can update markings after sanitization: `PII` → `REDACTED`. The marking lifecycle is: default UNCLASSIFIED → scanner flags PII → HYGEIA sanitizes → marking updated to REDACTED.
+
+### 7. Two-Graph Architecture
+
+A single ICARUS database contains two complementary graphs:
+
+- **Ontology graph** — entities (files, binaries, daemons, kexts, frameworks) and their relationships. Slow-moving, structural. This is the "what exists" layer.
+- **Event graph** — observations (temporal events on any entity) and resolution decisions (atoms grouped into bags). Fast-moving, temporal. This is the "what happened" layer.
+
+Cross-graph queries join them: "which daemons that changed permissions also have new observations?" The ontology graph answers *what*; the event graph answers *when* and *how*.
+
+### 8. Entity Resolution (Atom/Bag/EventLog)
+
+When the same entity appears in different sources under different identifiers, the resolver groups them:
+
+- **Atoms** — immutable property bundles. One per observation, per source. Never modified after creation.
+- **Bags** — resolved entity groups. Each bag contains one or more atoms that represent the same real-world thing. Bags support merge (combine two bags) and split (move atoms to a new bag).
+- **Event log** — append-only record of every resolution decision: creation, merge, split. Records reason, confidence, operator, and full atom list. Never updated or deleted.
+
+The `BlockingIndex` uses FTS5 to generate candidate pairs in linear time — tokenize atom properties, match via full-text search, score by relevance. This avoids the O(n²) comparison that makes naive entity resolution impractical at scale.
 
 ---
 
