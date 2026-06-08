@@ -8,7 +8,6 @@ Extracts entities from any Windows directory tree:
 """
 
 import hashlib
-import json
 import sqlite3
 import struct
 from pathlib import Path
