@@ -68,6 +68,10 @@ Single-file database. No server. No configuration. Copy the .db file anywhere an
 
 Every extraction phase processes records one-at-a-time with periodic commits. A 500K-file source never loads more than one file's metadata into RAM at a time. Hard ceiling: 4GB RAM regardless of source size.
 
+### 2b. Safe Traversal
+
+Parsers use `os.walk(onerror=lambda e: None)` instead of `pathlib.rglob()`. This handles broken symlinks (e.g., WSL `.venv/lib64` on Windows), inaccessible system paths, and permission-denied directories without crashing the pipeline. Connection cleanup uses `try/finally` — if extraction crashes mid-walk, the SQLite connection is always released. No database lock cascade.
+
 ### 3. Parsers Are Plugins, Not Core
 
 The framework doesn't know what a Windows ACL or a Linux capability is. The parser knows. The framework knows how to orchestrate extraction, store normalized entities, and query relationships. Two parsers ship out of the box — Windows (PE binaries, DLLs) and Linux (ELF binaries, shared libraries, systemd services). Swap parsers or write new ones without touching core.
@@ -88,7 +92,7 @@ Every entity row carries four provenance fields:
 - `observed_time` — ISO 8601 timestamp of when this was observed
 - `marking` — access classification: `UNCLASSIFIED`, `PII`, `SENSITIVE`, `REDACTED`
 
-The `versions` table records every pipeline run: UUID, parser name, source path, timestamps, entity count. Any row in any entity table traces back to the run that created it.
+The `versions` table records every pipeline run: UUID, parser name, source path, timestamps, entity count. The pipeline auto-finalizes each version record on completion — `entity_count` is summed from ingest stats, `completed_at` is timestamped. Any row in any entity table traces back to the run that created it.
 
 HYGEIA can update markings after sanitization: `PII` → `REDACTED`. The marking lifecycle is: default UNCLASSIFIED → scanner flags PII → HYGEIA sanitizes → marking updated to REDACTED.
 
