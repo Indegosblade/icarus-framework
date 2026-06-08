@@ -50,8 +50,8 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
     if _HAS_HYGEIA_PACKAGE:
         try:
             return sanitize_database(str(db_path))
-        except Exception:
-            pass  # fall through to built-in implementation
+        except (sqlite3.IntegrityError, sqlite3.OperationalError):
+            pass  # UNIQUE constraint on redacted paths — fall through to built-in
 
     conn = sqlite3.connect(str(db_path))
     stats = {"checked_rows": 0, "redacted": 0, "patterns_found": {}}
