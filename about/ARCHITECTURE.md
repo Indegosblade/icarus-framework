@@ -70,7 +70,7 @@ Every extraction phase processes records one-at-a-time with periodic commits. A 
 
 ### 3. Parsers Are Plugins, Not Core
 
-The framework doesn't know what a Windows ACL or a Linux capability is. The parser knows. The framework knows how to orchestrate extraction, store normalized entities, and query relationships. Swap parsers without touching core.
+The framework doesn't know what a Windows ACL or a Linux capability is. The parser knows. The framework knows how to orchestrate extraction, store normalized entities, and query relationships. Two parsers ship out of the box — Windows (PE binaries, DLLs) and Linux (ELF binaries, shared libraries, systemd services). Swap parsers or write new ones without touching core.
 
 ### 4. Diffing Is First-Class
 
@@ -98,7 +98,7 @@ HYGEIA can update markings after sanitization: `PII` → `REDACTED`. The marking
 
 | What | How | Example |
 |------|-----|---------|
-| New data source | Implement `BaseParser` | Android OTA, Windows image, API schema |
+| New data source | Implement `BaseParser` | Android OTA, Docker image, API schema, network scan |
 | New entity type | Add table to schema + parser extraction | Network hosts, containers, permissions |
 | New intelligence query | Add method to `IcarusQuery` | Custom privilege chains, anomaly patterns |
 | New sanitization rule | Add pattern to HYGEIA integration | Domain-specific PII (medical, financial) |
