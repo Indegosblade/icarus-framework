@@ -1,5 +1,7 @@
 # ICARUS
 
+![v1.1.0](https://img.shields.io/badge/version-1.1.0-blue) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-green) ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange)
+
 **An ontology framework that maps hidden relationships in structured data.**
 
 Things exist. Things have attributes. Things relate to other things. Those relationships — when normalized, cross-referenced, and diffed across time — reveal what's hidden.
@@ -80,12 +82,27 @@ These are not queries you write. They are intelligence views baked into the sche
 
 Run ICARUS on version N and version N+1. Diff them. Find what changed silently.
 
+Five diff categories, classified automatically:
+
+| Category | What It Catches |
+|----------|----------------|
+| **ADDITION** | Entity exists in new version, not in old |
+| **DELETION** | Entity exists in old version, not in new |
+| **PROPERTY_CHANGE** | Same entity, different attribute (e.g., binary hash changed) |
+| **STRUCTURAL** | Relationship topology changed — edges moved, not just nodes |
+| **RESOLUTION_CHANGE** | Reserved for Phase 2 entity resolution |
+
 ```python
-from icarus.core.differ import IcarusDiffer
+from icarus.core.differ import IcarusDiffer, DiffCategory
 
 with IcarusDiffer("ios_18.0.db", "ios_18.1.db") as d:
-    # What binaries were patched without release notes?
-    report = d.generate_report()
+    # Full diff: files, daemons, kexts + structural analysis
+    results = d.full_diff()
+
+    # Structural changes: binaries that moved, entitlements reassigned
+    structural = d.structural_diff()
+    for change in structural.structural:
+        print(f"{change['type']}: {change['description']}")
 
     # What new entitlements appeared?
     d.entitlement_diff(dangerous_keys=[
@@ -94,11 +111,11 @@ with IcarusDiffer("ios_18.0.db", "ios_18.1.db") as d:
         "platform-application",
     ])
 
-    # Full diff: files, daemons, kexts — added, removed, changed
-    results = d.full_diff()
+    # Markdown report
+    report = d.generate_report()
 ```
 
-Silent patches. New privileges granted. Services removed or added between builds. The differ answers: *what did they change that they didn't tell you about?*
+Silent patches. New privileges granted. Services removed or added between builds. Binaries that moved to new locations. Entitlements reassigned to different holders. The differ answers: *what did they change that they didn't tell you about?*
 
 ---
 
@@ -172,6 +189,8 @@ p.run(resume=True)  # resume from last checkpoint
 | Resume | Checkpoint per phase — crash at phase 6, resume at phase 6 |
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
+| Test suite | 20 tests — schema, query, diff, pipeline, HYGEIA, provenance, security |
+| CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows), ruff, mypy, bandit |
 
 ---
 
@@ -202,7 +221,7 @@ Every entity has typed attributes, foreign-key relationships, and provenance met
 
 ## HYGEIA: The Architectural Decision
 
-[HYGEIA](https://github.com/Indegosblade/HYGEIA) is not a post-processing step. It is integrated into the pipeline itself.
+[HYGEIA](https://github.com/Indegosblade/HYGEIA) is a core dependency — installed automatically with ICARUS. It is not a post-processing step. It is integrated into the pipeline itself.
 
 ```python
 from icarus.integrations.hygeia import sanitize_output, verify_clean
@@ -215,6 +234,15 @@ stats = sanitize_output(db_path)
 result = verify_clean(db_path)
 assert result["passed"]
 ```
+
+To skip HYGEIA (raw output — you take responsibility):
+```python
+Pipeline(source, output, parser_name="ios", skip_hygeia=True)
+```
+```bash
+icarus build --source ./rootfs --output raw.db --parser ios --skip-hygeia
+```
+Skipping logs `hygeia_skipped=true` to the database metadata and prints a loud warning. The output is unsanitized — do not share without manual review.
 
 What it removes:
 - Filesystem paths containing usernames
@@ -260,7 +288,10 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
-Requires Python 3.10+ and SQLite 3.35+ (FTS5 support).
+**Requirements:**
+- Python 3.10+
+- SQLite 3.35+ (FTS5 support)
+- [HYGEIA](https://github.com/Indegosblade/HYGEIA) (installed automatically as a dependency)
 
 Parser-specific tools: iOS requires `ipsw` and `ldid`. Other parsers specify their own via `get_required_tools()`.
 
@@ -311,10 +342,24 @@ icarus-framework/
 
 ## Changelog
 
-| Version | What Changed |
-|---------|-------------|
-| **v1.1.0** | Five-category diff classification (structural_diff, DiffCategory enum). HYGEIA real package wire-up with fallback. `--skip-hygeia` flag. Windows parser. Real-world validation (25K entities, zero PII). |
-| **v1.0.0** | Core framework: pipeline, schema, query engine, differ, iOS parser, HYGEIA integration, FTS5, cell-level provenance, CI. |
+### v1.1.0 (latest)
+- **Five-category diff classification** — `DiffCategory` enum: ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE (reserved)
+- **Structural diffing** — `structural_diff()` detects relationship topology changes (binaries moved, entitlements reassigned, sandbox rules shifted)
+- **`full_diff()` calls `structural_diff()` automatically** — structural analysis included in every full diff
+- **HYGEIA as core dependency** — real package import, installed automatically via `pip install -e .`
+- **`--skip-hygeia` flag** — CLI and API. Logs skip to metadata, prints loud warning
+- **Windows parser** — PE binary detection, arch classification (x86/x64/arm64), DLL cataloguing
+- **Real-world validation** — 25,162 entities from a live Chrome profile, zero PII residual
+- **20 tests** — up from 15. New coverage: diff categories, structural diff, resolution_change guard, skip-hygeia metadata
+- Python 3.10+ (bumped from 3.9)
+
+### v1.0.0
+- Core framework: pipeline orchestrator, SQLite schema with FTS5, query engine (6 intelligence views), cross-version differ
+- iOS reference parser (7-phase extraction)
+- HYGEIA integration layer (sanitize + verify)
+- Cell-level provenance (source_version_id, confidence, observed_time, marking)
+- Schema migration chain (v2 -> v3)
+- CI: GitHub Actions (pytest matrix, ruff, mypy, bandit)
 
 ---
 
