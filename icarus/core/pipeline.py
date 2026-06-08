@@ -51,7 +51,7 @@ class Pipeline:
     """
 
     def __init__(
-        self, source: Path, output: Path, parser_name: str = "ios",
+        self, source: Path, output: Path, parser_name: str = "windows",
         skip_hygeia: bool = False,
     ):
         self.source = Path(source)
@@ -173,7 +173,7 @@ class Pipeline:
 
 
 def create_default_pipeline(
-    source: Path, output: Path, parser_name: str = "ios",
+    source: Path, output: Path, parser_name: str = "windows",
     skip_hygeia: bool = False,
 ):
     """Create a pipeline with the standard phase sequence.

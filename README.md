@@ -8,8 +8,6 @@ Things exist. Things have attributes. Things relate to other things. Those relat
 
 ICARUS is an intelligence engine. Point it at any structured data source. It extracts entities, maps their relationships, and builds a queryable graph. Then it asks the questions humans miss at scale: what changed between versions? What's reachable from where? What shouldn't be there?
 
-The iOS firmware pipeline is the reference implementation. The architecture doesn't care what the entities are.
-
 ---
 
 ## The Dual Nature
@@ -55,10 +53,10 @@ HYGEIA is not a feature. It is the ethical boundary. The same engine, the same p
 from icarus.core.query import IcarusQuery
 
 with IcarusQuery("intel.db") as q:
-    # Daemons running as root with no sandbox
+    # Daemons/services running as root with no sandbox
     q.root_daemons()
 
-    # Full MachService → binary → entitlement map
+    # Service → binary → permission map
     q.service_map()
 
     # Kernel-reachable entry points from userland
@@ -70,7 +68,7 @@ with IcarusQuery("intel.db") as q:
     # High-privilege entities reachable from low-privilege
     q.escape_surface()
 
-    # Dangerous entitlements and who holds them
+    # Permission/entitlement distribution across binaries
     q.privileged_entitlements()
 ```
 
@@ -95,27 +93,20 @@ Five diff categories, classified automatically:
 ```python
 from icarus.core.differ import IcarusDiffer, DiffCategory
 
-with IcarusDiffer("ios_18.0.db", "ios_18.1.db") as d:
+with IcarusDiffer("v1.0.db", "v2.0.db") as d:
     # Full diff: files, daemons, kexts + structural analysis
     results = d.full_diff()
 
-    # Structural changes: binaries that moved, entitlements reassigned
+    # Structural changes: binaries that moved, permissions reassigned
     structural = d.structural_diff()
     for change in structural.structural:
         print(f"{change['type']}: {change['description']}")
-
-    # What new entitlements appeared?
-    d.entitlement_diff(dangerous_keys=[
-        "com.apple.private.security.no-sandbox",
-        "com.apple.rootless.storage.elevated",
-        "platform-application",
-    ])
 
     # Markdown report
     report = d.generate_report()
 ```
 
-Silent patches. New privileges granted. Services removed or added between builds. Binaries that moved to new locations. Entitlements reassigned to different holders. The differ answers: *what did they change that they didn't tell you about?*
+Silent patches. New privileges granted. Services removed or added between builds. Binaries that moved to new locations. Permissions reassigned to different holders. The differ answers: *what did they change that they didn't tell you about?*
 
 ---
 
@@ -144,10 +135,9 @@ class MyParser(BaseParser):
 
 | Data Source | What You Map | What You Find |
 |-------------|-------------|---------------|
-| **iOS IPSW** | Binaries, entitlements, services, sandbox | Privilege chains, attack surface, silent patches |
-| **Android OTA** | APKs, permissions, intents, SELinux | Escalation paths, exposed components |
+| **Windows application** | PE binaries, DLLs, configs, services | Misconfigurations, weak ACLs, privilege chains |
 | **Linux rootfs** | ELF binaries, systemd, capabilities | Setuid surface, capability abuse |
-| **Windows image** | PE binaries, registry, services, ACLs | Misconfigurations, weak ACLs |
+| **Android OTA** | APKs, permissions, intents, SELinux | Escalation paths, exposed components |
 | **Network topology** | Hosts, ports, banners, certs | Exposure mapping, version clustering |
 | **API schema** | Endpoints, auth, data models | Missing auth, over-exposed routes |
 | **Document corpus** | Entities, dates, references | Org charts, dependency graphs, timeline |
@@ -160,15 +150,15 @@ class MyParser(BaseParser):
 Streaming. Checkpoint/resume. 4GB RAM ceiling.
 
 ```bash
-# Build intelligence database from iOS rootfs
-icarus build --source ./rootfs --output intel.db --parser ios
+# Build intelligence database
+icarus build --source /path/to/app --output intel.db --parser windows
 
 # Build without HYGEIA (raw output — unsanitized, loud warning)
-icarus build --source ./rootfs --output raw.db --parser ios --skip-hygeia
+icarus build --source /path/to/app --output raw.db --skip-hygeia
 
 # Query it
-icarus query intel.db --search "backboardd"
-icarus query intel.db "SELECT * FROM v_sandbox_escape_surface"
+icarus query intel.db --search "config"
+icarus query intel.db --stats
 
 # Diff two versions
 icarus diff old.db new.db --report changes.md
@@ -177,7 +167,7 @@ icarus diff old.db new.db --report changes.md
 ```python
 from icarus.core.pipeline import Pipeline
 
-p = Pipeline(source, output, parser_name="ios")
+p = Pipeline(source, output, parser_name="windows")
 p.run()          # full run
 p.run(resume=True)  # resume from last checkpoint
 ```
@@ -237,10 +227,10 @@ assert result["passed"]
 
 To skip HYGEIA (raw output — you take responsibility):
 ```python
-Pipeline(source, output, parser_name="ios", skip_hygeia=True)
+Pipeline(source, output, parser_name="windows", skip_hygeia=True)
 ```
 ```bash
-icarus build --source ./rootfs --output raw.db --parser ios --skip-hygeia
+icarus build --source /path/to/app --output raw.db --skip-hygeia
 ```
 Skipping logs `hygeia_skipped=true` to the database metadata and prints a loud warning. The output is unsanitized — do not share without manual review.
 
@@ -293,8 +283,6 @@ pip install -e ".[dev]"
 - SQLite 3.35+ (FTS5 support)
 - [HYGEIA](https://github.com/Indegosblade/HYGEIA) (installed automatically as a dependency)
 
-Parser-specific tools: iOS requires `ipsw` and `ldid`. Other parsers specify their own via `get_required_tools()`.
-
 ---
 
 ## Design Principles
@@ -325,12 +313,11 @@ icarus-framework/
 │   │   └── differ.py         # Cross-version diff engine
 │   ├── parsers/
 │   │   ├── base.py           # Abstract parser interface
-│   │   ├── ios.py            # iOS reference parser (7-phase)
 │   │   └── windows.py        # Windows application/directory parser
 │   └── integrations/
 │       └── hygeia.py         # HYGEIA sanitization layer
-├── tests/                    # Pytest suite
-├── examples/                 # Quickstart + custom parser template
+├── tests/                    # Pytest suite (20 tests)
+├── examples/                 # Custom parser template (Linux)
 ├── schema/                   # Standalone SQL reference
 ├── about/                    # Architecture + parser development docs
 ├── .github/workflows/ci.yml  # CI: test matrix + lint + security
@@ -344,7 +331,7 @@ icarus-framework/
 
 ### v1.1.0 (latest)
 - **Five-category diff classification** — `DiffCategory` enum: ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE (reserved)
-- **Structural diffing** — `structural_diff()` detects relationship topology changes (binaries moved, entitlements reassigned, sandbox rules shifted)
+- **Structural diffing** — `structural_diff()` detects relationship topology changes (binaries moved, permissions reassigned, sandbox rules shifted)
 - **`full_diff()` calls `structural_diff()` automatically** — structural analysis included in every full diff
 - **HYGEIA as core dependency** — real package import, installed automatically via `pip install -e .`
 - **`--skip-hygeia` flag** — CLI and API. Logs skip to metadata, prints loud warning
@@ -355,7 +342,6 @@ icarus-framework/
 
 ### v1.0.0
 - Core framework: pipeline orchestrator, SQLite schema with FTS5, query engine (6 intelligence views), cross-version differ
-- iOS reference parser (7-phase extraction)
 - HYGEIA integration layer (sanitize + verify)
 - Cell-level provenance (source_version_id, confidence, observed_time, marking)
 - Schema migration chain (v2 -> v3)

@@ -13,11 +13,11 @@ class BaseParser(ABC):
 
     @property
     def name(self) -> str:
-        """Short identifier: 'ios', 'android', 'linux', 'network'"""
+        """Short identifier: 'windows', 'linux', 'android', 'network'"""
 
     @property
     def description(self) -> str:
-        """One-line: 'Android OTA firmware analysis'"""
+        """One-line: 'Windows application directory analysis'"""
 
     def identify(self, source: Path) -> bool:
         """Can this parser handle this source? Check for markers."""
@@ -70,16 +70,16 @@ Key rules:
 
 Map your source's concepts to ICARUS tables:
 
-| ICARUS Table | iOS Maps To | Android Maps To | Linux Maps To | Network Maps To |
-|-------------|-------------|-----------------|---------------|-----------------|
-| `files` | Rootfs files | APK contents | Filesystem | — |
-| `binaries` | Mach-O executables | DEX/native libs | ELF binaries | — |
-| `daemons` | LaunchDaemons | Services in manifests | systemd units | Listening services |
-| `entitlements` | Entitlement plists | Android permissions | Linux capabilities | Port/protocol |
-| `sandbox_profiles` | .sb SBPL profiles | SELinux policies | AppArmor profiles | Firewall rules |
-| `sandbox_rules` | SBPL rules | SELinux allow rules | AppArmor rules | iptables entries |
-| `kexts` | IOKit kexts | Kernel modules | .ko modules | — |
-| `frameworks` | .framework dirs | JARs/AARs | .so libraries | — |
+| ICARUS Table | Windows Maps To | Linux Maps To | Android Maps To | Network Maps To |
+|-------------|-----------------|---------------|-----------------|-----------------|
+| `files` | Filesystem | Filesystem | APK contents | — |
+| `binaries` | PE executables | ELF binaries | DEX/native libs | — |
+| `daemons` | Windows services | systemd units | Services in manifests | Listening services |
+| `entitlements` | Permissions/ACLs | Linux capabilities | Android permissions | Port/protocol |
+| `sandbox_profiles` | AppLocker policies | AppArmor profiles | SELinux policies | Firewall rules |
+| `sandbox_rules` | Policy rules | AppArmor rules | SELinux allow rules | iptables entries |
+| `kexts` | Kernel drivers | .ko modules | Kernel modules | — |
+| `frameworks` | DLLs | .so libraries | JARs/AARs | — |
 
 Not every table needs data for every source type. A network scan has no `files` table — that's fine. Use what applies.
 
@@ -90,11 +90,11 @@ Not every table needs data for every source type. A network scan has no `files` 
 Add your parser to `icarus/parsers/__init__.py`:
 
 ```python
-from icarus.parsers.ios import iOSParser
+from icarus.parsers.windows import WindowsParser
 from icarus.parsers.linux import LinuxParser  # Your new parser
 
 PARSERS = {
-    "ios": iOSParser,
+    "windows": WindowsParser,
     "linux": LinuxParser,
 }
 
@@ -110,8 +110,8 @@ def get_parser(name: str) -> BaseParser:
 
 | Source | identify() checks | What you'd extract |
 |--------|------------------|-------------------|
+| Linux rootfs | `/etc/passwd`, `/usr/bin` | ELF binaries, systemd services, capabilities, AppArmor |
 | Android OTA | `META-INF/`, `system/app/` | APKs, permissions, intents, receivers, SELinux |
-| Windows WIM | `Windows/System32/` | PE binaries, services, registry hives, ACLs |
 | Docker image | `manifest.json`, layers | Layer contents, ENV vars, exposed ports, users |
 | Network scan | Nmap XML format | Hosts, ports, banners, OS fingerprints, certs |
 | Kubernetes | YAML manifests | Pods, RBAC, network policies, secrets refs |
