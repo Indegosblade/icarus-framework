@@ -8,6 +8,7 @@ Extracts entities from any Windows directory tree:
 """
 
 import hashlib
+import os
 import sqlite3
 import struct
 from pathlib import Path
@@ -30,9 +31,10 @@ class WindowsParser(BaseParser):
     def identify(self, source: Path) -> bool:
         if not source.is_dir():
             return False
-        for f in source.rglob("*"):
-            if f.suffix.lower() in (".exe", ".dll"):
-                return True
+        for dirpath, _dirnames, filenames in os.walk(source, onerror=lambda e: None):
+            for fname in filenames:
+                if fname.lower().endswith((".exe", ".dll")):
+                    return True
         return False
 
     def get_required_tools(self) -> list:
@@ -41,13 +43,13 @@ class WindowsParser(BaseParser):
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
         conn = sqlite3.connect(str(db_path))
         stats = {"files": 0, "binaries": 0, "frameworks": 0}
-
-        stats["files"] = self._extract_files(source, conn)
-        stats["binaries"] = self._extract_binaries(source, conn)
-        stats["frameworks"] = self._extract_frameworks(source, conn)
-
-        conn.commit()
-        conn.close()
+        try:
+            stats["files"] = self._extract_files(source, conn)
+            stats["binaries"] = self._extract_binaries(source, conn)
+            stats["frameworks"] = self._extract_frameworks(source, conn)
+            conn.commit()
+        finally:
+            conn.close()
         return stats
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
@@ -55,75 +57,81 @@ class WindowsParser(BaseParser):
 
     def _extract_files(self, source: Path, conn: sqlite3.Connection) -> int:
         count = 0
-        for path in source.rglob("*"):
-            if not path.is_file():
-                continue
-            try:
-                rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
-                stat = path.stat()
-                sha256 = None
-                if stat.st_size < 50_000_000:
-                    try:
-                        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-                    except (PermissionError, OSError):
-                        pass
+        for dirpath, _dirnames, filenames in os.walk(source, onerror=lambda e: None):
+            for fname in filenames:
+                path = Path(dirpath) / fname
+                try:
+                    rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
+                    stat = path.stat()
+                    sha256 = None
+                    if stat.st_size < 50_000_000:
+                        try:
+                            sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+                        except (PermissionError, OSError):
+                            pass
 
-                file_type = self._classify_file(path)
-                conn.execute("""
-                    INSERT OR IGNORE INTO files
-                    (path, filename, extension, size, sha256, file_type)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    rel_path, path.name,
-                    path.suffix.lower() if path.suffix else None,
-                    stat.st_size, sha256, file_type,
-                ))
-                count += 1
-            except (PermissionError, OSError):
-                continue
+                    file_type = self._classify_file(path)
+                    conn.execute("""
+                        INSERT OR IGNORE INTO files
+                        (path, filename, extension, size, sha256, file_type)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        rel_path, path.name,
+                        path.suffix.lower() if path.suffix else None,
+                        stat.st_size, sha256, file_type,
+                    ))
+                    count += 1
+                except (PermissionError, OSError):
+                    continue
 
-            if count % 5000 == 0:
-                conn.commit()
+                if count % 5000 == 0:
+                    conn.commit()
 
         return count
 
     def _extract_binaries(self, source: Path, conn: sqlite3.Connection) -> int:
         count = 0
-        for path in source.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.suffix.lower() not in (".exe", ".dll"):
-                continue
-            if not self._is_pe(path):
-                continue
-
-            rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
-            file_row = conn.execute(
-                "SELECT id FROM files WHERE path = ?", (rel_path,)
-            ).fetchone()
-            if not file_row:
-                continue
-
-            arch = self._detect_pe_arch(path)
-            conn.execute("""
-                INSERT OR IGNORE INTO binaries (file_id, executable_name, arch)
-                VALUES (?, ?, ?)
-            """, (file_row[0], path.name, arch))
-            count += 1
+        for dirpath, _dirnames, filenames in os.walk(source, onerror=lambda e: None):
+            for fname in filenames:
+                path = Path(dirpath) / fname
+                if path.suffix.lower() not in (".exe", ".dll"):
+                    continue
+                try:
+                    if not self._is_pe(path):
+                        continue
+                    rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
+                    file_row = conn.execute(
+                        "SELECT id FROM files WHERE path = ?", (rel_path,)
+                    ).fetchone()
+                    if not file_row:
+                        continue
+                    arch = self._detect_pe_arch(path)
+                    conn.execute("""
+                        INSERT OR IGNORE INTO binaries (file_id, executable_name, arch)
+                        VALUES (?, ?, ?)
+                    """, (file_row[0], path.name, arch))
+                    count += 1
+                except (PermissionError, OSError):
+                    continue
 
         return count
 
     def _extract_frameworks(self, source: Path, conn: sqlite3.Connection) -> int:
         count = 0
-        for path in source.rglob("*.dll"):
-            if not path.is_file():
-                continue
-            rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
-            conn.execute("""
-                INSERT OR IGNORE INTO frameworks (name, path, is_private)
-                VALUES (?, ?, 0)
-            """, (path.stem, rel_path))
-            count += 1
+        for dirpath, _dirnames, filenames in os.walk(source, onerror=lambda e: None):
+            for fname in filenames:
+                if not fname.lower().endswith(".dll"):
+                    continue
+                path = Path(dirpath) / fname
+                try:
+                    rel_path = "/" + str(path.relative_to(source)).replace("\\", "/")
+                    conn.execute("""
+                        INSERT OR IGNORE INTO frameworks (name, path, is_private)
+                        VALUES (?, ?, 0)
+                    """, (path.stem, rel_path))
+                    count += 1
+                except (PermissionError, OSError):
+                    continue
         return count
 
     def _classify_file(self, path: Path) -> str:

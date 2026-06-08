@@ -6,7 +6,7 @@ ICARUS ships with two parsers, both validated against real-world data:
 
 | Parser | Platform | Detects | Validated |
 |--------|----------|---------|-----------|
-| `windows` | Windows | PE binaries (x86/x64/arm64), DLLs, configs | 55,346 files (Python 3.12) + 25,916 files (Chrome) |
+| `windows` | Windows | PE binaries (x86/x64/arm64), DLLs, configs | 116,002 entities (6-source profile scan) |
 | `linux` | Linux | ELF binaries (x86/x86_64/aarch64/arm/riscv), .so libs, systemd services | 96,181 files (Ubuntu 24.04) |
 
 ## Writing a Custom Parser
@@ -51,27 +51,35 @@ class BaseParser(ABC):
 Every parser follows the same streaming pattern:
 
 ```python
+import os
+
 def extract_entities(self, source: Path, db_path: Path) -> dict:
     conn = sqlite3.connect(str(db_path))
     count = 0
-
-    for item in self._walk_source(source):     # Iterate your source
-        entity = self._normalize(item)          # Normalize to schema
-        self._insert(conn, entity)              # Write to database
-        count += 1
-
-        if count % 10000 == 0:                  # Batch commits
-            conn.commit()
-
-    conn.commit()
-    conn.close()
+    try:
+        for dirpath, _dirs, files in os.walk(source, onerror=lambda e: None):
+            for fname in files:
+                path = Path(dirpath) / fname
+                try:
+                    entity = self._normalize(path, source)
+                    self._insert(conn, entity)
+                    count += 1
+                except (PermissionError, OSError):
+                    continue
+                if count % 10000 == 0:
+                    conn.commit()
+        conn.commit()
+    finally:
+        conn.close()
     return {"entities": count}
 ```
 
 Key rules:
+- **Use `os.walk` with `onerror` callback, not `rglob`.** Broken symlinks, WSL artifacts, and inaccessible directories crash `pathlib.rglob()`. `os.walk(onerror=lambda e: None)` skips them.
+- **Wrap connections in `try/finally`.** If extraction crashes mid-walk, the connection must close or subsequent runs hit "database is locked."
 - **Never load the full source into RAM.** Iterate and commit in batches.
 - **Use INSERT OR IGNORE** for idempotency (resume-safe).
-- **Return stats** so the pipeline can report progress.
+- **Return stats** so the pipeline can report progress and finalize provenance.
 
 ---
 

@@ -123,6 +123,26 @@ class Pipeline:
         except sqlite3.OperationalError:
             pass  # versions table may not exist yet (pre-init phase)
 
+    def _finalize_version_record(self):
+        """Update the version record with entity count and completion timestamp."""
+        if not self.output.exists() or not self.context.version_id:
+            return
+        try:
+            conn = sqlite3.connect(str(self.output))
+            ingest_stats = self.context.stats.get("ingest", {})
+            entity_count = sum(
+                v for v in ingest_stats.values() if isinstance(v, int)
+            )
+            conn.execute(
+                "UPDATE versions SET entity_count = ?, completed_at = ? WHERE id = ?",
+                (entity_count, datetime.now(timezone.utc).isoformat(),
+                 self.context.version_id),
+            )
+            conn.commit()
+            conn.close()
+        except sqlite3.OperationalError:
+            pass
+
     def run(self, resume: bool = True, start_phase: Optional[int] = None):
         """
         Execute the pipeline.
@@ -166,6 +186,8 @@ class Pipeline:
                 self.context.errors.append((phase.name, str(e)))
                 print(f"[ICARUS] Phase {i} FAILED: {e}")
                 raise
+
+        self._finalize_version_record()
 
         total = time.time() - self.context.start_time
         print(f"\n[ICARUS] Pipeline complete. {len(self.phases)} phases in {total:.1f}s")
