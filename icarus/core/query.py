@@ -101,14 +101,19 @@ class IcarusQuery:
         return result
 
     def privileged_entitlements(self, keys: Optional[List[str]] = None) -> QueryResult:
-        """Binaries holding specified privileged entitlements."""
-        default_keys = [
-            "com.apple.private.security.no-sandbox",
-            "com.apple.private.skip-library-validation",
-            "task_for_pid-allow",
-            "platform-application",
-        ]
-        search_keys = keys or default_keys
+        """Binaries holding specified privileged entitlements.
+
+        Pass platform-specific keys via the keys parameter. No defaults —
+        what counts as 'privileged' depends on the data source.
+        """
+        if not keys:
+            result = self.execute("""
+                SELECT e.key, COUNT(*) AS holders
+                FROM entitlements e GROUP BY e.key ORDER BY holders DESC LIMIT 50
+            """)
+            result.query_name = "Privileged Entitlements"
+            return result
+        search_keys = keys
         placeholders = ",".join(["?"] * len(search_keys))
         result = self.execute(f"""
             SELECT e.key, e.value, b.bundle_id, f.path
@@ -133,7 +138,7 @@ class IcarusQuery:
         return result
 
     def kernel_surface(self) -> QueryResult:
-        """IOKit classes with UserClients (kernel-reachable)."""
+        """Kernel extensions with user-reachable interfaces."""
         result = self.execute("SELECT * FROM v_kernel_attack_surface")
         result.query_name = "Kernel Attack Surface"
         return result

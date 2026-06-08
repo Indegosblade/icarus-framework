@@ -5,12 +5,6 @@ from icarus.parsers.base import BaseParser
 PARSERS = {}
 
 try:
-    from icarus.parsers.ios import iOSParser
-    PARSERS["ios"] = iOSParser
-except ImportError:
-    pass
-
-try:
     from icarus.parsers.windows import WindowsParser
     PARSERS["windows"] = WindowsParser
 except ImportError:
