@@ -66,11 +66,11 @@ Single-file database. No server. No configuration. Copy the .db file anywhere an
 
 ### 2. Streaming, Not Batch
 
-Every extraction phase processes records one-at-a-time with periodic commits. A 500K-file rootfs never loads more than one file's metadata into RAM at a time. Hard ceiling: 4GB RAM regardless of source size.
+Every extraction phase processes records one-at-a-time with periodic commits. A 500K-file source never loads more than one file's metadata into RAM at a time. Hard ceiling: 4GB RAM regardless of source size.
 
 ### 3. Parsers Are Plugins, Not Core
 
-The framework doesn't know what an iOS entitlement is. The iOS parser knows. The framework knows how to orchestrate extraction, store normalized entities, and query relationships. Swap parsers without touching core.
+The framework doesn't know what a Windows ACL or a Linux capability is. The parser knows. The framework knows how to orchestrate extraction, store normalized entities, and query relationships. Swap parsers without touching core.
 
 ### 4. Diffing Is First-Class
 

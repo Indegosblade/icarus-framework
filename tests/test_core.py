@@ -37,7 +37,7 @@ def test_imports():
     assert SCHEMA_VERSION == 3
     assert len(VALID_TABLES) == 10
     assert len(VALID_FTS_TABLES) == 2
-    assert "ios" in list_parsers()
+    assert "windows" in list_parsers()
 
 
 def test_schema_init_and_fts(tmp_db):
@@ -144,12 +144,12 @@ def test_query_intelligence_views(tmp_db):
         assert q.privileged_entitlements().query_name == "Privileged Entitlements"
 
 
-def test_ios_parser():
-    from icarus.parsers.ios import iOSParser
+def test_windows_parser():
+    from icarus.parsers.windows import WindowsParser
 
-    p = iOSParser()
-    assert p.name == "ios"
-    assert p.get_required_tools() == ["ipsw", "ldid"]
+    p = WindowsParser()
+    assert p.name == "windows"
+    assert p.get_required_tools() == []
     assert not p.identify(Path(tempfile.gettempdir()))
 
 
