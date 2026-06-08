@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Indegosblade/icarus-framework/parser-manifest/1.0",
+  "title": "ICARUS Parser Manifest",
+  "description": "Declarative manifest for an ICARUS parser module.",
+  "type": "object",
+  "required": [
+    "parser_id",
+    "version",
+    "spec_version",
+    "author",
+    "license",
+    "quality_tier",
+    "description",
+    "identify",
+    "consumes",
+    "produces",
+    "reliability",
+    "default_confidence"
+  ],
+  "properties": {
+    "parser_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_/]*$",
+      "description": "Hierarchical namespace identifier (e.g. cloud/aws/cloudtrail)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of this parser."
+    },
+    "spec_version": {
+      "type": "string",
+      "const": "icarus-parser/1.0",
+      "description": "Manifest specification version."
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "quality_tier": {
+      "type": "string",
+      "enum": ["production", "candidate", "prototype", "private"]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identify": {
+      "type": "object",
+      "required": ["specificity_level"],
+      "properties": {
+        "specificity_level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Lower = more specific. Wins identify() contest against higher values."
+        },
+        "markers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      }
+    },
+    "consumes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "produces": {
+      "type": "object",
+      "required": ["entity_types"],
+      "properties": {
+        "entity_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "event_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "python": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "reliability": {
+      "type": "string",
+      "pattern": "^[A-F]$",
+      "description": "Admiralty/NATO source reliability grade A-F."
+    },
+    "default_confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "fixtures_dir": {
+          "type": "string"
+        },
+        "min_entities": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "golden_output": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}
