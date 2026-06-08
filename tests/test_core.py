@@ -35,7 +35,7 @@ def test_imports():
     from icarus.parsers import list_parsers
     assert __version__ == "1.2.0"
     assert SCHEMA_VERSION == 3
-    assert len(VALID_TABLES) == 10
+    assert len(VALID_TABLES) == 15
     assert len(VALID_FTS_TABLES) == 2
     assert "windows" in list_parsers()
     assert "linux" in list_parsers()
@@ -688,6 +688,117 @@ def test_blocking_rebuild(tmp_db):
     with BlockingIndex(str(tmp_db)) as bi:
         count = bi.rebuild()
         assert count == 3
+
+
+def test_cross_graph_query(tmp_db):
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/test', 'test', '', 100, 'binary')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type, observer)
+        VALUES ('files', 1, '2026-06-07T00:00:00Z', 'seen', 'linux_parser')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type, observer)
+        VALUES ('files', 1, '2026-06-08T00:00:00Z', 'changed', 'linux_parser')
+    """)
+    conn.commit()
+    conn.close()
+
+    with IcarusQuery(str(tmp_db)) as q:
+        result = q.cross_graph_query("files")
+        assert result.count == 2
+
+        result_filtered = q.cross_graph_query("files", event_type="seen")
+        assert result_filtered.count == 1
+
+
+def test_observation_diff_query(tmp_db):
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "INSERT INTO versions (run_id, parser_name, source_path, started_at) "
+        "VALUES ('run1', 'test', '/test', '2026-06-07T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO versions (run_id, parser_name, source_path, started_at) "
+        "VALUES ('run2', 'test', '/test', '2026-06-08T00:00:00Z')"
+    )
+    conn.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/a', 'a', '', 100, 'binary')
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type, version_id)
+        VALUES ('files', 1, '2026-06-07T00:00:00Z', 'seen', 1)
+    """)
+    conn.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type, version_id)
+        VALUES ('files', 1, '2026-06-08T00:00:00Z', 'changed', 2)
+    """)
+    conn.commit()
+    conn.close()
+
+    with IcarusQuery(str(tmp_db)) as q:
+        result = q.observation_diff(1, 2)
+        assert result.count == 1
+
+
+def test_observation_diff_differ(two_dbs):
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn1 = sqlite3.connect(str(db1))
+    conn1.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/a', 'a', '', 100, 'binary')
+    """)
+    conn1.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-07T00:00:00Z', 'seen')
+    """)
+    conn1.commit()
+    conn1.close()
+
+    conn2 = sqlite3.connect(str(db2))
+    conn2.execute("""
+        INSERT INTO files (path, filename, extension, size, file_type)
+        VALUES ('/usr/bin/a', 'a', '', 100, 'binary')
+    """)
+    conn2.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-07T00:00:00Z', 'seen')
+    """)
+    conn2.execute("""
+        INSERT INTO observations (entity_table, entity_id, observed_at, event_type)
+        VALUES ('files', 1, '2026-06-08T00:00:00Z', 'changed')
+    """)
+    conn2.commit()
+    conn2.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.observation_diff()
+        assert len(result.added) == 1
+        assert len(result.removed) == 0
+
+
+def test_valid_tables_updated():
+    from icarus.core import VALID_TABLES
+    for table in ["observations", "atoms", "bags", "bag_atoms", "resolution_event_log"]:
+        assert table in VALID_TABLES
 
 
 def test_obs_fk_any_ontology_table(tmp_db):
