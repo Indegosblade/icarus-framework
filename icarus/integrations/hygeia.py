@@ -3,12 +3,21 @@ ICARUS HYGEIA Integration — Sanitization layer for intelligence databases.
 
 Ensures output databases contain no PII, credentials, or source-identifying
 information before they leave the pipeline. Runs as a pipeline phase.
+
+If the standalone hygeia package is installed, delegates to it.
+Otherwise, uses the built-in fallback implementation.
 """
 
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
+
+try:
+    from hygeia import sanitize_database, verify_database
+    _HAS_HYGEIA_PACKAGE = True
+except ImportError:
+    _HAS_HYGEIA_PACKAGE = False
 
 PII_PATTERNS = [
     (r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", "email"),
@@ -35,9 +44,12 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
     """
     Run sanitization pass on an ICARUS database.
 
-    Checks all text fields for PII patterns and redacts them.
-    Returns stats on what was found and cleaned.
+    If the hygeia package is installed, delegates to it. Otherwise uses
+    the built-in fallback. Returns stats on what was found and cleaned.
     """
+    if _HAS_HYGEIA_PACKAGE:
+        return sanitize_database(str(db_path))
+
     conn = sqlite3.connect(str(db_path))
     stats = {"checked_rows": 0, "redacted": 0, "patterns_found": {}}
 
@@ -79,8 +91,17 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
     """
     Verify that a database contains no PII.
 
-    Returns verification result with any remaining findings.
+    If the hygeia package is installed, delegates to it. Otherwise uses
+    the built-in fallback. Returns verification result with any remaining findings.
     """
+    if _HAS_HYGEIA_PACKAGE:
+        result = verify_database(str(db_path))
+        return {
+            "passed": result.get("passed", len(result.get("findings", [])) == 0),
+            "findings": result.get("findings", [])[:100],
+            "total_findings": result.get("total_findings", len(result.get("findings", []))),
+        }
+
     conn = sqlite3.connect(str(db_path))
     findings = []
 
@@ -112,6 +133,11 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
         "findings": findings[:100],
         "total_findings": len(findings),
     }
+
+
+def using_standalone_hygeia() -> bool:
+    """Check if the standalone hygeia package is being used."""
+    return _HAS_HYGEIA_PACKAGE
 
 
 def _get_text_columns(conn: sqlite3.Connection) -> Dict[str, List[str]]:

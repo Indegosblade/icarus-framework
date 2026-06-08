@@ -3,14 +3,30 @@ ICARUS Differ — Cross-version intelligence comparison.
 
 Compares two ICARUS databases and identifies what changed between versions:
 added entities, removed entities, modified entities, and relationship changes.
+
+Five diff categories:
+  ADDITION        — entity exists in new, not in old
+  DELETION        — entity exists in old, not in new
+  PROPERTY_CHANGE — same entity, different attribute value
+  STRUCTURAL      — relationship topology changed (edges, not nodes)
+  RESOLUTION_CHANGE — reserved for Phase 2 entity resolution (never produced in v1)
 """
 
+import enum
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from icarus.core import validate_column, validate_table
+
+
+class DiffCategory(enum.Enum):
+    ADDITION = "addition"
+    DELETION = "deletion"
+    PROPERTY_CHANGE = "property_change"
+    STRUCTURAL = "structural"
+    RESOLUTION_CHANGE = "resolution_change"
 
 
 @dataclass
@@ -21,10 +37,12 @@ class DiffResult:
     changed: List[Dict[str, Any]]
     table: str
     key_column: str
+    structural: List[Dict[str, Any]] = field(default_factory=list)
+    category: Optional[DiffCategory] = None
 
     @property
     def total_changes(self):
-        return len(self.added) + len(self.removed) + len(self.changed)
+        return len(self.added) + len(self.removed) + len(self.changed) + len(self.structural)
 
     def to_markdown(self) -> str:
         lines = [f"## {self.table} diff ({self.total_changes} changes)\n"]
@@ -43,6 +61,11 @@ class DiffResult:
             lines.append(f"\n### Changed ({len(self.changed)})")
             for item in self.changed[:50]:
                 lines.append(f"- `{item.get(self.key_column, '?')}`")
+
+        if self.structural:
+            lines.append(f"\n### Structural ({len(self.structural)})")
+            for item in self.structural[:50]:
+                lines.append(f"- {item.get('description', '?')}")
 
         return "\n".join(lines)
 
@@ -152,8 +175,81 @@ class IcarusDiffer:
 
         return results
 
+    def structural_diff(self) -> DiffResult:
+        """Detect relationship topology changes between versions.
+
+        Finds entities whose foreign-key relationships changed even when
+        the entity itself still exists in both versions. For example:
+        a binary that moved to a different daemon, or an entitlement
+        that shifted to a different binary.
+        """
+        structural_changes = []
+
+        # Binaries whose parent file changed
+        rows = self.conn.execute("""
+            SELECT n.id, n.executable_name, n.file_id AS new_file_id, o.file_id AS old_file_id
+            FROM main.binaries n
+            JOIN old_db.binaries o ON n.executable_name = o.executable_name
+            WHERE n.file_id != o.file_id
+        """).fetchall()
+        for r in rows:
+            r = dict(r)
+            structural_changes.append({
+                "type": "binary_file_moved",
+                "entity": r.get("executable_name"),
+                "old_value": r.get("old_file_id"),
+                "new_value": r.get("new_file_id"),
+                "description": f"binary '{r.get('executable_name')}' file_id: "
+                               f"{r.get('old_file_id')} -> {r.get('new_file_id')}",
+            })
+
+        # Sandbox rules whose profile assignment changed
+        rows = self.conn.execute("""
+            SELECT n.id, n.operation, n.action, n.profile_id AS new_pid, o.profile_id AS old_pid
+            FROM main.sandbox_rules n
+            JOIN old_db.sandbox_rules o
+                ON n.operation = o.operation AND n.action = o.action
+            WHERE n.profile_id != o.profile_id
+        """).fetchall()
+        for r in rows:
+            r = dict(r)
+            structural_changes.append({
+                "type": "sandbox_rule_reassigned",
+                "entity": f"{r.get('operation')}:{r.get('action')}",
+                "old_value": r.get("old_pid"),
+                "new_value": r.get("new_pid"),
+                "description": f"sandbox rule '{r.get('operation')}:{r.get('action')}' "
+                               f"profile: {r.get('old_pid')} -> {r.get('new_pid')}",
+            })
+
+        # Entitlements whose binary assignment changed (same key+value, different binary)
+        rows = self.conn.execute("""
+            SELECT n.key, n.value, n.binary_id AS new_bid, o.binary_id AS old_bid
+            FROM main.entitlements n
+            JOIN old_db.entitlements o ON n.key = o.key AND n.value = o.value
+            WHERE n.binary_id != o.binary_id
+        """).fetchall()
+        for r in rows:
+            r = dict(r)
+            structural_changes.append({
+                "type": "entitlement_reassigned",
+                "entity": r.get("key"),
+                "old_value": r.get("old_bid"),
+                "new_value": r.get("new_bid"),
+                "description": f"entitlement '{r.get('key')}' "
+                               f"binary: {r.get('old_bid')} -> {r.get('new_bid')}",
+            })
+
+        return DiffResult(
+            added=[], removed=[], changed=[],
+            structural=structural_changes,
+            table="cross_table",
+            key_column="entity",
+            category=DiffCategory.STRUCTURAL,
+        )
+
     def full_diff(self) -> Dict[str, DiffResult]:
-        """Run diff across all major tables."""
+        """Run diff across all major tables, including structural analysis."""
         results = {}
         results["files_added"] = self.added_entities("files", "path")
         results["files_removed"] = self.removed_entities("files", "path")
@@ -162,6 +258,7 @@ class IcarusDiffer:
         results["daemons_removed"] = self.removed_entities("daemons", "label")
         results["kexts_added"] = self.added_entities("kexts", "bundle_id")
         results["kexts_removed"] = self.removed_entities("kexts", "bundle_id")
+        results["structural"] = self.structural_diff()
         return results
 
     def generate_report(self) -> str:

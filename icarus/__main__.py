@@ -11,6 +11,7 @@ def cmd_build(args):
         source=Path(args.source),
         output=Path(args.output),
         parser_name=args.parser,
+        skip_hygeia=args.skip_hygeia,
     )
     pipeline.run(resume=not args.fresh)
 
@@ -59,6 +60,9 @@ def main():
     build_p.add_argument("--parser", "-p", default="ios", help="Parser to use (default: ios)")
     build_p.add_argument(
         "--fresh", action="store_true", help="Ignore checkpoints, start from scratch")
+    build_p.add_argument(
+        "--skip-hygeia", action="store_true",
+        help="Skip HYGEIA sanitization (output will contain raw unsanitized data)")
 
     # query
     query_p = sub.add_parser("query", help="Query an intelligence database")
