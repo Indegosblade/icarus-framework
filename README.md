@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=flat)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat)
 ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange?style=flat)
 
 **An ontology framework that maps hidden relationships in structured data.**
@@ -91,7 +91,7 @@ Five diff categories, classified automatically:
 | **DELETION** | Entity exists in old version, not in new |
 | **PROPERTY_CHANGE** | Same entity, different attribute (e.g., binary hash changed) |
 | **STRUCTURAL** | Relationship topology changed — edges moved, not just nodes |
-| **RESOLUTION_CHANGE** | Reserved for Phase 2 entity resolution |
+| **RESOLUTION_CHANGE** | Entity resolved differently — atoms re-grouped, bags merged or split |
 
 ```python
 from icarus.core.differ import IcarusDiffer, DiffCategory
@@ -110,6 +110,66 @@ with IcarusDiffer("v1.0.db", "v2.0.db") as d:
 ```
 
 Silent patches. New privileges granted. Services removed or added between builds. Binaries that moved to new locations. Permissions reassigned to different holders. The differ answers: *what did they change that they didn't tell you about?*
+
+---
+
+## Entity Resolution
+
+Same entity, different sources. ICARUS resolves them.
+
+The resolver uses the **Atom/Bag/EventLog** pattern — immutable observations (atoms) grouped into resolved entities (bags), with every decision recorded in an append-only audit trail.
+
+```python
+from icarus.core.resolver import EntityResolver, BlockingIndex
+
+with EntityResolver("intel.db") as resolver:
+    # Ingest raw observations from different sources
+    a1 = resolver.ingest_atom(version_id=1, entity_type="daemon",
+                              source_key="nginx_config", properties={"name": "nginx", "port": 80})
+    a2 = resolver.ingest_atom(version_id=2, entity_type="daemon",
+                              source_key="nginx_binary", properties={"name": "nginx", "path": "/usr/sbin/nginx"})
+
+    # Resolve: block by shared keys, cluster, merge
+    stats = resolver.resolve("daemon", blocking_keys=["name"])
+    # {'merges': 1, 'atoms_resolved': 2}
+
+    # Or manual control — create bags, merge, split
+    bag = resolver.create_bag("daemon", [a1, a2], canonical_key="nginx")
+    new_bag = resolver.split_bag(bag, [a2], reason="different host")
+
+# FTS5 blocking for candidate generation
+with BlockingIndex("intel.db") as idx:
+    candidates = idx.candidates_for(atom_id=1)
+    # [(2, 0.85), (5, 0.72)] — candidate atom IDs + relevance scores
+```
+
+**Atoms** are immutable — once ingested, never modified. **Bags** group atoms into resolved entities and support merge/split with full reversibility. The **event log** records every resolution decision (create, merge, split) with reason, confidence, and operator. Every decision is traceable and auditable.
+
+---
+
+## Observations
+
+Track events against any entity in the ontology — temporal patterns, pattern-of-life analysis, cross-version observation diffing.
+
+```python
+with IcarusQuery("intel.db") as q:
+    # All observations for a specific daemon
+    q.observations_for("daemons", daemon_id)
+
+    # Observations within a time window
+    q.pattern_of_life("daemons", daemon_id, "2024-01-01", "2024-06-01")
+
+    # First time an entity was observed
+    q.first_seen("files", file_id)
+
+    # Join ontology entities with their observations
+    q.cross_graph_query("daemons", event_type="permission_change")
+
+    # New observations between pipeline runs
+    q.observation_diff(start_version_id=1, end_version_id=2)
+```
+
+The observations table uses a generic foreign key (`entity_table` + `entity_id`) so any ontology entity — files, binaries, daemons, kexts — can have observations attached without schema changes.
 
 ---
 
@@ -186,25 +246,34 @@ p.run(resume=True)  # resume from last checkpoint
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
 | Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own |
-| Test suite | 21 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, security |
-| CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows), ruff, mypy, bandit |
+| Test suite | 43 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, entity resolution, observations |
+| CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows/macos), ruff, mypy, bandit |
 
 ---
 
 ## Database Schema
 
-10 normalized tables. 2 FTS indexes. 3 intelligence views. Cell-level provenance on every entity.
+15 normalized tables. 3 FTS indexes. 3 intelligence views. Cell-level provenance on every entity.
 
 ```sql
--- Entities (all carry provenance: source_version_id, confidence, observed_time, marking)
+-- Ontology entities (all carry provenance: source_version_id, confidence, observed_time, marking)
 files, binaries, daemons, entitlements,
 sandbox_profiles, sandbox_rules, kexts, frameworks
 
 -- Infrastructure
 metadata, versions
 
+-- Event layer
+observations                    -- temporal events against any ontology entity
+
+-- Entity resolution (Atom/Bag/EventLog)
+atoms                           -- immutable observations from each source
+bags                            -- resolved entity groups
+bag_atoms                       -- atom-to-bag membership
+resolution_event_log            -- append-only audit trail
+
 -- Full-text search (auto-synced via triggers)
-files_fts, daemons_fts
+files_fts, daemons_fts, atoms_fts
 
 -- Intelligence views
 v_sandbox_escape_surface
@@ -212,7 +281,7 @@ v_kernel_attack_surface
 v_test_binaries
 ```
 
-Every entity has typed attributes, foreign-key relationships, and provenance metadata. The schema is the ontology — entities don't float free, they connect. Every datum traces to the ingest run that produced it.
+Two graphs live in the same database: the **ontology graph** (entities and their relationships — slow-moving, structural) and the **event graph** (observations and resolution decisions — fast-moving, temporal). Cross-graph queries join them for questions like "which daemons changed permissions between versions?"
 
 ---
 
@@ -301,6 +370,7 @@ pip install -e ".[dev]"
 | **Streaming** | Process records one-at-a-time. Never load full dataset into RAM. |
 | **Source-agnostic** | The framework doesn't know what your entities are. It knows they relate. |
 | **Diffing as primitive** | Cross-version analysis is core, not bolted on. |
+| **Entity resolution** | Same entity from different sources → one resolved identity. Atoms in, bags out, every decision logged. |
 | **Single-file output** | SQLite. Portable. Queryable. Zero infrastructure. |
 | **Checkpoint/resume** | Every phase saves progress. Crash-tolerant by design. |
 
@@ -316,14 +386,15 @@ icarus-framework/
 │   │   ├── pipeline.py       # Phase orchestrator, checkpoint/resume
 │   │   ├── schema.py         # SQLite schema, FTS5, migrations
 │   │   ├── query.py          # Query engine, intelligence views
-│   │   └── differ.py         # Cross-version diff engine
+│   │   ├── differ.py         # Cross-version diff engine
+│   │   └── resolver.py       # Entity resolution (Atom/Bag/EventLog)
 │   ├── parsers/
 │   │   ├── base.py           # Abstract parser interface
 │   │   ├── windows.py        # Windows application/directory parser
 │   │   └── linux.py          # Linux filesystem/ELF binary parser
 │   └── integrations/
 │       └── hygeia.py         # HYGEIA sanitization layer
-├── tests/                    # Pytest suite (21 tests)
+├── tests/                    # Pytest suite (43 tests)
 ├── examples/                 # Custom parser template (Linux)
 ├── schema/                   # Standalone SQL reference
 ├── about/                    # Architecture + parser development docs
@@ -336,7 +407,17 @@ icarus-framework/
 
 ## Changelog
 
-### v1.2.0 (latest)
+### v2.0.0 (latest)
+- **Entity resolution** — Atom/Bag/EventLog pattern: immutable atoms, reversible bag merge/split, append-only audit trail. `EntityResolver` class with `ingest_atom()`, `create_bag()`, `merge_bags()`, `split_bag()`, `resolve()`
+- **FTS5 blocking index** — `BlockingIndex` generates resolution candidates via tokenized full-text search. Auto-synced with triggers on atom insert/delete
+- **Observations event layer** — generic FK to any ontology entity. Temporal queries: `observations_for()`, `pattern_of_life()`, `first_seen()`, `cross_graph_query()`, `observation_diff()`
+- **Two-graph architecture** — ontology graph (entities/relationships) + event graph (observations/resolution) in the same database, joined by cross-graph queries
+- **Observation diffing** — `IcarusDiffer.observation_diff()` and `IcarusQuery.observation_diff()` for cross-version event comparison
+- **Schema v4** — 5 new tables (observations, atoms, bags, bag_atoms, resolution_event_log), 7 new indexes, atoms_fts virtual table + triggers. Migration chain: v2→v3→v4
+- **43 tests** — 22 new tests covering entity resolution, observations, blocking index, two-graph queries, and schema migration
+- **macOS CI** — test matrix now covers Ubuntu, Windows, and macOS
+
+### v1.2.0
 - **Linux parser** — ELF binary detection, architecture classification (x86/x86_64/aarch64/arm/riscv), shared library extraction, systemd service parsing
 - **Multi-platform validation** — 177,443 entities across Python 3.12 (Windows), Chrome (Windows), Ubuntu /usr (Linux). Zero PII across all datasets.
 - **HYGEIA resilience** — graceful fallback on UNIQUE constraint during sanitization of large datasets
