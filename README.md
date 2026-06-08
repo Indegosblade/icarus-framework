@@ -1,6 +1,6 @@
 # ICARUS
 
-![v1.1.0](https://img.shields.io/badge/version-1.1.0-blue) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-green) ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange)
+![v1.2.0](https://img.shields.io/badge/version-1.2.0-blue) ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-green) ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange) ![CI](https://github.com/Indegosblade/icarus-framework/actions/workflows/ci.yml/badge.svg)
 
 **An ontology framework that maps hidden relationships in structured data.**
 
@@ -252,20 +252,19 @@ This is what makes ICARUS publishable. Without it, every output database is a do
 
 ## Real-World Validation
 
-ICARUS pointed at a Chrome user profile (2.3 GB, live browser data). No configuration, no prep — raw pipeline execution.
+Three real datasets, two platforms. No configuration, no prep — raw pipeline execution.
 
-| Metric | Result |
-|--------|--------|
-| Entities mapped | 25,162 files |
-| Data catalogued | 2,339 MB |
-| File types identified | JSON configs (523), logs (186), JS (361), LevelDB (120), HTML, CSS, SVG |
-| Runtime | 153 seconds (full pipeline including HYGEIA) |
-| PII in output | **0** |
-| HYGEIA verification | **PASS — zero residual findings** |
+| Dataset | Platform | Files | Data | Binaries | Runtime | PII | HYGEIA |
+|---------|----------|------:|-----:|---------:|--------:|:---:|:------:|
+| **Python 3.12** | Windows | 55,346 | 2,079 MB | 150 PE | 25s | **0** | **PASS** |
+| **Chrome profile** | Windows | 25,916 | 3,249 MB | 3 PE | 18s | **0** | **PASS** |
+| **Ubuntu /usr** | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | 52s | **0** | **PASS** |
 
-The parser normalized 25,162 paths at extraction time (stripping absolute filesystem prefixes), then HYGEIA verified no PII leaked through. Defense in depth: normalize at ingest, verify at output.
+**177,443 entities across 18 GB of real data. Zero PII in any output database.**
 
-Same engine, same power, responsible output. That's the point.
+The Windows parser detects PE binaries (EXE/DLL) with architecture classification. The Linux parser detects ELF binaries, shared libraries (1,899 .so files), and systemd services (174 units). HYGEIA redacted 35 items from the Linux dataset (paths containing usernames) and verified zero residual findings.
+
+Defense in depth: normalize at ingest, verify at output. Same engine, same power, responsible output.
 
 ---
 
@@ -313,10 +312,11 @@ icarus-framework/
 │   │   └── differ.py         # Cross-version diff engine
 │   ├── parsers/
 │   │   ├── base.py           # Abstract parser interface
-│   │   └── windows.py        # Windows application/directory parser
+│   │   ├── windows.py        # Windows application/directory parser
+│   │   └── linux.py          # Linux filesystem/ELF binary parser
 │   └── integrations/
 │       └── hygeia.py         # HYGEIA sanitization layer
-├── tests/                    # Pytest suite (20 tests)
+├── tests/                    # Pytest suite (21 tests)
 ├── examples/                 # Custom parser template (Linux)
 ├── schema/                   # Standalone SQL reference
 ├── about/                    # Architecture + parser development docs
@@ -329,15 +329,20 @@ icarus-framework/
 
 ## Changelog
 
-### v1.1.0 (latest)
+### v1.2.0 (latest)
+- **Linux parser** — ELF binary detection, architecture classification (x86/x86_64/aarch64/arm/riscv), shared library extraction, systemd service parsing
+- **Multi-platform validation** — 177,443 entities across Python 3.12 (Windows), Chrome (Windows), Ubuntu /usr (Linux). Zero PII across all datasets.
+- **HYGEIA resilience** — graceful fallback on UNIQUE constraint during sanitization of large datasets
+- **21 tests** — Linux parser coverage added
+- **CI badge** in README
+
+### v1.1.0
 - **Five-category diff classification** — `DiffCategory` enum: ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE (reserved)
 - **Structural diffing** — `structural_diff()` detects relationship topology changes (binaries moved, permissions reassigned, sandbox rules shifted)
 - **`full_diff()` calls `structural_diff()` automatically** — structural analysis included in every full diff
 - **HYGEIA as core dependency** — real package import, installed automatically via `pip install -e .`
 - **`--skip-hygeia` flag** — CLI and API. Logs skip to metadata, prints loud warning
 - **Windows parser** — PE binary detection, arch classification (x86/x64/arm64), DLL cataloguing
-- **Real-world validation** — 25,162 entities from a live Chrome profile, zero PII residual
-- **20 tests** — up from 15. New coverage: diff categories, structural diff, resolution_change guard, skip-hygeia metadata
 - Python 3.10+ (bumped from 3.9)
 
 ### v1.0.0

@@ -10,6 +10,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from icarus.parsers.linux import LinuxParser
+    PARSERS["linux"] = LinuxParser
+except ImportError:
+    pass
+
 
 def get_parser(name: str) -> BaseParser:
     """Get a parser instance by name."""
