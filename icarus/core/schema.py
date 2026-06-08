@@ -181,6 +181,42 @@ CREATE TABLE IF NOT EXISTS observations (
     version_id INTEGER REFERENCES versions(id),
     confidence REAL DEFAULT 1.0
 );
+
+CREATE TABLE IF NOT EXISTS atoms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_version_id INTEGER NOT NULL REFERENCES versions(id),
+    entity_type TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    properties TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(source_version_id, entity_type, source_key)
+);
+
+CREATE TABLE IF NOT EXISTS bags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    canonical_key TEXT,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    atom_count INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS bag_atoms (
+    bag_id INTEGER NOT NULL REFERENCES bags(id),
+    atom_id INTEGER NOT NULL REFERENCES atoms(id),
+    PRIMARY KEY(bag_id, atom_id)
+);
+
+CREATE TABLE IF NOT EXISTS resolution_event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    bag_id INTEGER NOT NULL REFERENCES bags(id),
+    atom_ids TEXT NOT NULL,
+    reason TEXT,
+    confidence REAL,
+    operator TEXT,
+    timestamp TEXT NOT NULL
+);
 """
 
 INDEXES = """
@@ -203,6 +239,10 @@ CREATE INDEX IF NOT EXISTS idx_frameworks_name ON frameworks(name);
 CREATE INDEX IF NOT EXISTS idx_obs_entity ON observations(entity_table, entity_id);
 CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at);
 CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(event_type);
+CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type);
+CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id);
+CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type);
+CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id);
 """
 
 FTS_SCHEMA = """
