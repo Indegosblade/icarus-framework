@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "icarus-framework"
-version = "1.2.0"
+version = "2.0.0"
 description = "Modular intelligence framework for structured data analysis"
 readme = "README.md"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
