@@ -13,7 +13,7 @@ import struct
 from pathlib import Path
 from typing import Any, Dict
 
-from icarus.parsers.base import BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 PE_MAGIC = b"MZ"
 PE_ARCH = {0x8664: "x86_64", 0x14C: "x86", 0xAA64: "arm64"}
@@ -92,7 +92,7 @@ class WindowsParser(BaseParser):
                             stats["frameworks"] += 1
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 50000 == 0:
+                    if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
                         conn.commit()
             conn.commit()
         finally:

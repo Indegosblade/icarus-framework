@@ -47,17 +47,22 @@ def _get_system_ram_bytes() -> int:
     return 0
 
 
+RAM_TARGET_RATIO = 0.7
+FALLBACK_CACHE_KB = 2_097_152
+FALLBACK_MMAP_BYTES = 8_589_934_592
+
+
 def _apply_performance_pragmas(conn: sqlite3.Connection) -> None:
-    """Set SQLite cache and mmap based on 70% of system RAM."""
+    """Set SQLite cache and mmap based on system RAM."""
     ram = _get_system_ram_bytes()
     if ram > 0:
-        target = int(ram * 0.7)
+        target = int(ram * RAM_TARGET_RATIO)
         cache_kb = target // 1024
         conn.execute(f"PRAGMA cache_size = -{cache_kb}")
         conn.execute(f"PRAGMA mmap_size = {target}")
     else:
-        conn.execute("PRAGMA cache_size = -2097152")
-        conn.execute("PRAGMA mmap_size = 8589934592")
+        conn.execute(f"PRAGMA cache_size = -{FALLBACK_CACHE_KB}")
+        conn.execute(f"PRAGMA mmap_size = {FALLBACK_MMAP_BYTES}")
 
 SCHEMA_VERSION = 4
 
@@ -504,7 +509,7 @@ def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def initialize_database(db_path: Path, metadata: dict = None) -> dict:
+def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
     """
     Create and initialize an ICARUS database.
 

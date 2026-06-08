@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 
 from icarus.core import validate_column, validate_table
 
+DIFF_DISPLAY_LIMIT = 50
+
 
 class DiffCategory(enum.Enum):
     ADDITION = "addition"
@@ -41,7 +43,7 @@ class DiffResult:
     category: Optional[DiffCategory] = None
 
     @property
-    def total_changes(self):
+    def total_changes(self) -> int:
         return len(self.added) + len(self.removed) + len(self.changed) + len(self.structural)
 
     def to_markdown(self) -> str:
@@ -49,22 +51,22 @@ class DiffResult:
 
         if self.added:
             lines.append(f"### Added ({len(self.added)})")
-            for item in self.added[:50]:
+            for item in self.added[:DIFF_DISPLAY_LIMIT]:
                 lines.append(f"- `{item.get(self.key_column, '?')}`")
 
         if self.removed:
             lines.append(f"\n### Removed ({len(self.removed)})")
-            for item in self.removed[:50]:
+            for item in self.removed[:DIFF_DISPLAY_LIMIT]:
                 lines.append(f"- `{item.get(self.key_column, '?')}`")
 
         if self.changed:
             lines.append(f"\n### Changed ({len(self.changed)})")
-            for item in self.changed[:50]:
+            for item in self.changed[:DIFF_DISPLAY_LIMIT]:
                 lines.append(f"- `{item.get(self.key_column, '?')}`")
 
         if self.structural:
             lines.append(f"\n### Structural ({len(self.structural)})")
-            for item in self.structural[:50]:
+            for item in self.structural[:DIFF_DISPLAY_LIMIT]:
                 lines.append(f"- {item.get('description', '?')}")
 
         return "\n".join(lines)
@@ -312,7 +314,7 @@ class IcarusDiffer:
 
         return "\n".join(lines)
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     def __enter__(self):

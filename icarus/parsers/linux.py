@@ -11,7 +11,7 @@ import struct
 from pathlib import Path
 from typing import Any, Dict
 
-from icarus.parsers.base import BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 ELF_MAGIC = b"\x7fELF"
 ELF_ARCH = {0x03: "x86", 0x3E: "x86_64", 0xB7: "aarch64", 0x28: "arm", 0xF3: "riscv"}
@@ -101,7 +101,7 @@ class LinuxParser(BaseParser):
                             stats["frameworks"] += 1
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 50000 == 0:
+                    if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
                         conn.commit()
             conn.commit()
         finally:

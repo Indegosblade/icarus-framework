@@ -11,6 +11,9 @@ from typing import Any, Dict, List, Optional
 
 from icarus.core import VALID_FTS_TABLES, VALID_TABLES
 
+QUERY_DISPLAY_LIMIT = 100
+FTS_RESULT_LIMIT = 100
+
 
 class QueryResult:
     """Structured query result with metadata."""
@@ -21,7 +24,7 @@ class QueryResult:
         self.query_name = query_name
 
     @property
-    def count(self):
+    def count(self) -> int:
         return len(self.rows)
 
     def as_dicts(self) -> List[Dict[str, Any]]:
@@ -38,7 +41,7 @@ class QueryResult:
         lines.append("| " + " | ".join(self.columns) + " |")
         lines.append("| " + " | ".join(["---"] * len(self.columns)) + " |")
 
-        for row in self.rows[:100]:
+        for row in self.rows[:QUERY_DISPLAY_LIMIT]:
             cells = []
             for v in row:
                 s = str(v) if v is not None else ""
@@ -47,8 +50,8 @@ class QueryResult:
                 cells.append(s)
             lines.append("| " + " | ".join(cells) + " |")
 
-        if self.count > 100:
-            lines.append(f"\n*... and {self.count - 100} more rows.*")
+        if self.count > QUERY_DISPLAY_LIMIT:
+            lines.append(f"\n*... and {self.count - QUERY_DISPLAY_LIMIT} more rows.*")
 
         return "\n".join(lines)
 
@@ -83,7 +86,7 @@ class IcarusQuery:
         sql = f"""
             SELECT * FROM {table}
             WHERE id IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?)
-            LIMIT 100
+            LIMIT {FTS_RESULT_LIMIT}
         """
         return self.execute(sql, (query,))
 
@@ -238,7 +241,7 @@ class IcarusQuery:
                 counts[table] = 0
         return counts
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
 
     def __enter__(self):

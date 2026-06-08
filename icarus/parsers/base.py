@@ -10,7 +10,10 @@ import hashlib
 import sqlite3
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+MAX_HASH_FILE_SIZE = 50_000_000
+BATCH_COMMIT_INTERVAL = 50_000
 
 
 class BaseParser(ABC):
@@ -93,7 +96,7 @@ class BaseParser(ABC):
 
         return stats
 
-    def get_required_tools(self) -> list:
+    def get_required_tools(self) -> List[str]:
         """
         Return list of external tools this parser requires.
 
@@ -110,7 +113,7 @@ class BaseParser(ABC):
     @staticmethod
     def _safe_hash(path: Path, size: int) -> Optional[str]:
         """SHA-256 of file contents, or None if >50MB or inaccessible."""
-        if size >= 50_000_000:
+        if size >= MAX_HASH_FILE_SIZE:
             return None
         try:
             return hashlib.sha256(path.read_bytes()).hexdigest()

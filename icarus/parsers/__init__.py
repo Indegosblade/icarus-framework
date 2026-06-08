@@ -1,5 +1,6 @@
 """ICARUS parsers — pluggable data source modules."""
 
+import importlib
 from pathlib import Path
 from typing import Optional
 
@@ -10,56 +11,10 @@ from icarus.parsers.manifest import load_manifest
 _REGISTRY = ParserRegistry()
 _PARSERS_DIR = Path(__file__).parent
 
-try:
-    from icarus.parsers.windows import WindowsParser
-
-    _manifest = None
-    _yaml_path = _PARSERS_DIR / "windows.yaml"
-    if _yaml_path.exists():
-        try:
-            _manifest = load_manifest(_yaml_path)
-        except Exception:
-            pass
-    _REGISTRY.register(WindowsParser, _manifest)
-except ImportError:
-    pass
-
-try:
-    from icarus.parsers.linux import LinuxParser
-
-    _manifest = None
-    _yaml_path = _PARSERS_DIR / "linux.yaml"
-    if _yaml_path.exists():
-        try:
-            _manifest = load_manifest(_yaml_path)
-        except Exception:
-            pass
-    _REGISTRY.register(LinuxParser, _manifest)
-except ImportError:
-    pass
-
-_CLOUD_PARSERS = [
-    ("icarus.parsers.cloud.cloudtrail", "CloudTrailParser",
-     "cloud/cloudtrail.yaml"),
-]
-
-for _mod_path, _cls_name, _yaml_name in _CLOUD_PARSERS:
-    try:
-        import importlib
-        _mod = importlib.import_module(_mod_path)
-        _cls = getattr(_mod, _cls_name)
-        _manifest = None
-        _yaml_path = _PARSERS_DIR / _yaml_name
-        if _yaml_path.exists():
-            try:
-                _manifest = load_manifest(_yaml_path)
-            except Exception:
-                pass
-        _REGISTRY.register(_cls, _manifest)
-    except ImportError:
-        pass
-
-_GENERIC_PARSERS = [
+_ALL_PARSERS = [
+    ("icarus.parsers.windows", "WindowsParser", "windows.yaml"),
+    ("icarus.parsers.linux", "LinuxParser", "linux.yaml"),
+    ("icarus.parsers.cloud.cloudtrail", "CloudTrailParser", "cloud/cloudtrail.yaml"),
     ("icarus.parsers.generic.json_parser", "JsonParser", "generic/json_parser.yaml"),
     ("icarus.parsers.generic.xml_parser", "XmlParser", "generic/xml_parser.yaml"),
     ("icarus.parsers.generic.sqlite_parser", "SqliteParser", "generic/sqlite_parser.yaml"),
@@ -68,9 +23,8 @@ _GENERIC_PARSERS = [
      "generic/binary_entropy_parser.yaml"),
 ]
 
-for _mod_path, _cls_name, _yaml_name in _GENERIC_PARSERS:
+for _mod_path, _cls_name, _yaml_name in _ALL_PARSERS:
     try:
-        import importlib
         _mod = importlib.import_module(_mod_path)
         _cls = getattr(_mod, _cls_name)
         _manifest = None

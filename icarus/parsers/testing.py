@@ -46,14 +46,16 @@ class ParserTestHarness:
 
         try:
             conn = sqlite3.connect(str(db_path))
-            actual_counts = {}
-            for table in golden.get("entity_counts", {}):
-                try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    actual_counts[table] = count
-                except sqlite3.OperationalError:
-                    actual_counts[table] = 0
-            conn.close()
+            try:
+                actual_counts = {}
+                for table in golden.get("entity_counts", {}):
+                    try:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        actual_counts[table] = count
+                    except sqlite3.OperationalError:
+                        actual_counts[table] = 0
+            finally:
+                conn.close()
 
             expected = golden["entity_counts"]
             if actual_counts == expected:
@@ -72,31 +74,34 @@ class ParserTestHarness:
         db_path = self._run_parser()
         try:
             conn = sqlite3.connect(str(db_path))
-            declared = set(self.manifest.entity_types)
-            violations = []
-            for table in declared:
-                try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    if count > 0 and table not in declared:
-                        violations.append(f"{table} has {count} rows but not declared in produces")
-                except sqlite3.OperationalError:
-                    pass
+            try:
+                declared = set(self.manifest.entity_types)
+                violations = []
+                for table in declared:
+                    try:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        if count > 0 and table not in declared:
+                            violations.append(
+                                f"{table} has {count} rows but not declared in produces")
+                    except sqlite3.OperationalError:
+                        pass
 
-            all_tables = [
-                r[0] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            ]
-            skip = {"metadata", "versions", "observations", "atoms", "bags",
-                    "bag_atoms", "resolution_event_log", "sqlite_sequence"}
-            for table in all_tables:
-                if table in skip or table.endswith("_fts") or "_fts_" in table:
-                    continue
-                if table not in declared:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    if count > 0:
-                        violations.append(f"{table} has {count} rows but not in produces")
-            conn.close()
+                all_tables = [
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                ]
+                skip = {"metadata", "versions", "observations", "atoms", "bags",
+                        "bag_atoms", "resolution_event_log", "sqlite_sequence"}
+                for table in all_tables:
+                    if table in skip or table.endswith("_fts") or "_fts_" in table:
+                        continue
+                    if table not in declared:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        if count > 0:
+                            violations.append(f"{table} has {count} rows but not in produces")
+            finally:
+                conn.close()
 
             if violations:
                 return HarnessResult("schema_conformance", False, "; ".join(violations))
@@ -109,28 +114,32 @@ class ParserTestHarness:
         db_path = self._run_parser()
         try:
             conn = sqlite3.connect(str(db_path))
-            counts_first = {}
-            for table in self.manifest.entity_types:
-                try:
-                    counts_first[table] = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
-                    ).fetchone()[0]
-                except sqlite3.OperationalError:
-                    counts_first[table] = 0
-            conn.close()
+            try:
+                counts_first = {}
+                for table in self.manifest.entity_types:
+                    try:
+                        counts_first[table] = conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    except sqlite3.OperationalError:
+                        counts_first[table] = 0
+            finally:
+                conn.close()
 
             self.parser.extract_entities(self.fixtures_dir, db_path)
 
             conn = sqlite3.connect(str(db_path))
-            counts_second = {}
-            for table in self.manifest.entity_types:
-                try:
-                    counts_second[table] = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
-                    ).fetchone()[0]
-                except sqlite3.OperationalError:
-                    counts_second[table] = 0
-            conn.close()
+            try:
+                counts_second = {}
+                for table in self.manifest.entity_types:
+                    try:
+                        counts_second[table] = conn.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    except sqlite3.OperationalError:
+                        counts_second[table] = 0
+            finally:
+                conn.close()
 
             if counts_first == counts_second:
                 return HarnessResult("idempotency", True, "Second run added 0 entities")
