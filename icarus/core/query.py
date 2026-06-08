@@ -189,6 +189,51 @@ class IcarusQuery:
         result.query_name = f"First Seen: {entity_table}:{entity_id}"
         return result
 
+    def cross_graph_query(
+        self, ontology_table: str, event_type: Optional[str] = None
+    ) -> QueryResult:
+        """Join ontology entities with their observations."""
+        if ontology_table not in VALID_TABLES:
+            raise ValueError(f"Invalid table: {ontology_table!r}")
+        if event_type:
+            result = self.execute(
+                f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
+                f"FROM [{ontology_table}] o "
+                f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
+                f"WHERE obs.event_type = ? ORDER BY obs.observed_at",
+                (ontology_table, event_type),
+            )
+        else:
+            result = self.execute(
+                f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
+                f"FROM [{ontology_table}] o "
+                f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
+                f"ORDER BY obs.observed_at",
+                (ontology_table,),
+            )
+        result.query_name = f"Cross-Graph: {ontology_table}"
+        return result
+
+    def observation_diff(
+        self, start_version_id: int, end_version_id: int
+    ) -> QueryResult:
+        """Observations in end_version that don't exist in start_version."""
+        result = self.execute(
+            "SELECT entity_table, entity_id, event_type, observed_at, observer "
+            "FROM observations WHERE version_id = ? "
+            "AND id NOT IN ("
+            "  SELECT e.id FROM observations e "
+            "  JOIN observations s ON e.entity_table = s.entity_table "
+            "    AND e.entity_id = s.entity_id "
+            "    AND e.event_type = s.event_type "
+            "    AND e.observed_at = s.observed_at "
+            "  WHERE s.version_id = ? AND e.version_id = ?"
+            ") ORDER BY entity_table, entity_id",
+            (end_version_id, start_version_id, end_version_id),
+        )
+        result.query_name = f"Observation Diff: v{start_version_id} -> v{end_version_id}"
+        return result
+
     def stats(self) -> Dict[str, int]:
         """Database statistics."""
         counts = {}

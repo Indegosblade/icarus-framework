@@ -6,6 +6,7 @@ VALID_TABLES = frozenset({
     "files", "binaries", "daemons", "entitlements",
     "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
     "metadata", "versions",
+    "observations", "atoms", "bags", "bag_atoms", "resolution_event_log",
 })
 
 VALID_FTS_TABLES = frozenset({"files", "daemons"})
