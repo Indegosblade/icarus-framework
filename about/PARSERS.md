@@ -1,5 +1,14 @@
 # Parser Development Guide
 
+## Built-In Parsers
+
+ICARUS ships with two parsers, both validated against real-world data:
+
+| Parser | Platform | Detects | Validated |
+|--------|----------|---------|-----------|
+| `windows` | Windows | PE binaries (x86/x64/arm64), DLLs, configs | 55,346 files (Python 3.12) + 25,916 files (Chrome) |
+| `linux` | Linux | ELF binaries (x86/x86_64/aarch64/arm/riscv), .so libs, systemd services | 96,181 files (Ubuntu 24.04) |
+
 ## Writing a Custom Parser
 
 Every ICARUS parser implements `BaseParser` from `icarus/parsers/base.py`. The interface is minimal — four methods cover the full extraction lifecycle.
@@ -90,19 +99,11 @@ Not every table needs data for every source type. A network scan has no `files` 
 Add your parser to `icarus/parsers/__init__.py`:
 
 ```python
-from icarus.parsers.windows import WindowsParser
-from icarus.parsers.linux import LinuxParser  # Your new parser
-
-PARSERS = {
-    "windows": WindowsParser,
-    "linux": LinuxParser,
-}
-
-def get_parser(name: str) -> BaseParser:
-    if name not in PARSERS:
-        raise ValueError(f"Unknown parser: {name}. Available: {list(PARSERS.keys())}")
-    return PARSERS[name]()
+from icarus.parsers.my_parser import MyParser
+PARSERS["my_parser"] = MyParser
 ```
+
+The parser is immediately available via CLI (`--parser my_parser`) and API (`parser_name="my_parser"`).
 
 ---
 
@@ -110,7 +111,6 @@ def get_parser(name: str) -> BaseParser:
 
 | Source | identify() checks | What you'd extract |
 |--------|------------------|-------------------|
-| Linux rootfs | `/etc/passwd`, `/usr/bin` | ELF binaries, systemd services, capabilities, AppArmor |
 | Android OTA | `META-INF/`, `system/app/` | APKs, permissions, intents, receivers, SELinux |
 | Docker image | `manifest.json`, layers | Layer contents, ENV vars, exposed ports, users |
 | Network scan | Nmap XML format | Hosts, ports, banners, OS fingerprints, certs |
