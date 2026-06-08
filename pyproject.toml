@@ -13,6 +13,9 @@ authors = [
     {name = "Indegosblade"},
 ]
 keywords = ["intelligence", "analysis", "sqlite", "diffing", "security", "ontology", "entities"]
+dependencies = [
+    "hygeia @ git+https://github.com/Indegosblade/HYGEIA.git",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -35,9 +38,6 @@ Issues = "https://github.com/Indegosblade/icarus-framework/issues"
 icarus = "icarus.__main__:main"
 
 [project.optional-dependencies]
-hygeia = [
-    "hygeia",
-]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
