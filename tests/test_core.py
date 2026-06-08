@@ -33,11 +33,12 @@ def test_imports():
     from icarus.core import VALID_FTS_TABLES, VALID_TABLES
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
-    assert __version__ == "1.1.0"
+    assert __version__ == "1.2.0"
     assert SCHEMA_VERSION == 3
     assert len(VALID_TABLES) == 10
     assert len(VALID_FTS_TABLES) == 2
     assert "windows" in list_parsers()
+    assert "linux" in list_parsers()
 
 
 def test_schema_init_and_fts(tmp_db):
@@ -151,6 +152,14 @@ def test_windows_parser():
     assert p.name == "windows"
     assert p.get_required_tools() == []
     assert not p.identify(Path(tempfile.gettempdir()))
+
+
+def test_linux_parser():
+    from icarus.parsers.linux import LinuxParser
+
+    p = LinuxParser()
+    assert p.name == "linux"
+    assert "readelf" in p.get_required_tools()
 
 
 def test_cli():
