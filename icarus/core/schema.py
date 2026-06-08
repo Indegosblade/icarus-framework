@@ -19,6 +19,8 @@ ENTITY_TABLES = (
 CORE_SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+PRAGMA cache_size = -2097152;
+PRAGMA mmap_size = 8589934592;
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,

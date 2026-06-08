@@ -79,7 +79,7 @@ class SqliteParser(BaseParser):
                                 pass
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 100 == 0:
+                    if stats["files"] % 50000 == 0:
                         conn.commit()
             conn.commit()
         finally:

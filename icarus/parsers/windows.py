@@ -92,7 +92,7 @@ class WindowsParser(BaseParser):
                             stats["frameworks"] += 1
                     except (PermissionError, OSError):
                         continue
-                    if stats["files"] % 5000 == 0:
+                    if stats["files"] % 50000 == 0:
                         conn.commit()
             conn.commit()
         finally:

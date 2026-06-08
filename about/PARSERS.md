@@ -1,57 +1,105 @@
 # Parser Development Guide
 
-## Built-In Parsers
+## Production Parsers (v3.0.0)
 
-ICARUS ships with two parsers, both validated against real-world data:
+ICARUS ships with 8 production parsers across 3 tiers:
 
-| Parser | Platform | Detects | Validated |
-|--------|----------|---------|-----------|
-| `windows` | Windows | PE binaries (x86/x64/arm64), DLLs, configs | 116,002 entities (6-source profile scan) |
-| `linux` | Linux | ELF binaries (x86/x86_64/aarch64/arm/riscv), .so libs, systemd services | 96,181 files (Ubuntu 24.04) |
+| Parser | Tier | Specificity | Reliability | Validated Against |
+|--------|------|:-----------:|:-----------:|-------------------|
+| `cloud/aws/cloudtrail` | production | 5 | A | 6 CloudTrail events, 4 IAM identities |
+| `windows` | production | 20 | B | 2,099,505 entities (full machine scan) |
+| `linux` | production | 20 | B | 96,181 entities (Ubuntu /usr) |
+| `generic/json` | production | 100 | F | JSON directory catalogs |
+| `generic/xml` | production | 100 | F | XML directory catalogs |
+| `generic/sqlite` | production | 100 | F | SQLite file + schema discovery |
+| `generic/archive` | production | 100 | F | Archive catalog + contents |
+| `generic/binary` | production | 100 | F | Catch-all for any directory |
 
-## Writing a Custom Parser
+**Specificity** determines priority in auto-detection. Lower wins. CloudTrail (5) beats Windows (20) beats generic (100).
 
-Every ICARUS parser implements `BaseParser` from `icarus/parsers/base.py`. The interface is minimal — four methods cover the full extraction lifecycle.
+**Reliability** uses Admiralty/NATO grades: A (completely reliable) through F (reliability cannot be judged).
 
 ---
 
-## Interface
+## Parser Manifest
 
-```python
-class BaseParser(ABC):
+Every parser ships with a YAML manifest validated by JSON Schema at load time. The manifest declares identity, capabilities, quality, and test configuration.
 
-    @property
-    def name(self) -> str:
-        """Short identifier: 'windows', 'linux', 'android', 'network'"""
+```yaml
+parser_id: "my_parser"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Your Name"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "production"        # production | candidate | prototype | private
+description: "One-line description"
 
-    @property
-    def description(self) -> str:
-        """One-line: 'Windows application directory analysis'"""
+identify:
+  specificity_level: 20           # 1-100, lower = more specific
+  markers:
+    - "Description of what identify() looks for"
 
-    def identify(self, source: Path) -> bool:
-        """Can this parser handle this source? Check for markers."""
+consumes:
+  - "file_type_or_format"
 
-    def extract_entities(self, source: Path, db_path: Path) -> dict:
-        """Main extraction — write entities to database tables."""
+produces:
+  entity_types:
+    - files
+    - binaries
 
-    def extract_relationships(self, source: Path, db_path: Path) -> dict:
-        """Link entities together (runs after extract_entities)."""
+reliability: "B"                  # A-F Admiralty grade
+default_confidence: 0.85          # 0.0-1.0
 
-    def verify(self, db_path: Path) -> dict:
-        """Quality gates — assert expected state."""
+tests:
+  fixtures_dir: "tests/fixtures/my_parser"
+  golden_output: "tests/golden/my_parser.json"
+```
 
-    def get_required_tools(self) -> list:
-        """External tool dependencies: ['readelf', 'aapt']"""
+Validate a manifest:
+```bash
+icarus parser validate path/to/my_parser.yaml
 ```
 
 ---
 
-## Extraction Pattern
+## Writing a Parser
 
-Every parser follows the same streaming pattern:
+### Interface
+
+```python
+from icarus.parsers.base import BaseParser
+from pathlib import Path
+
+class MyParser(BaseParser):
+
+    @property
+    def name(self) -> str:
+        return "my_parser"
+
+    @property
+    def description(self) -> str:
+        return "One-line description of what this parser handles"
+
+    def identify(self, source: Path) -> bool:
+        """Return True if this parser can handle this source.
+        Called during auto-detection. Keep it fast."""
+
+    def extract_entities(self, source: Path, db_path: Path) -> dict:
+        """Main extraction. Walk source, write entities to DB tables.
+        Return stats dict."""
+
+    def extract_relationships(self, source: Path, db_path: Path) -> dict:
+        """Link entities together. Runs after extract_entities."""
+
+    def verify(self, db_path: Path) -> dict:
+        """Quality gates. Assert expected state."""
+```
+
+### Extraction Pattern
 
 ```python
 import os
+import sqlite3
 
 def extract_entities(self, source: Path, db_path: Path) -> dict:
     conn = sqlite3.connect(str(db_path))
@@ -61,25 +109,89 @@ def extract_entities(self, source: Path, db_path: Path) -> dict:
             for fname in files:
                 path = Path(dirpath) / fname
                 try:
-                    entity = self._normalize(path, source)
-                    self._insert(conn, entity)
+                    # Normalize and insert
+                    rel = self._rel_path(path, source)
+                    st = path.stat()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO files "
+                        "(path, filename, extension, size, sha256, file_type) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (rel, path.name, path.suffix, st.st_size,
+                         self._safe_hash(path, st.st_size), "my_type"),
+                    )
                     count += 1
                 except (PermissionError, OSError):
                     continue
-                if count % 10000 == 0:
+                if count % 50000 == 0:
                     conn.commit()
         conn.commit()
     finally:
         conn.close()
-    return {"entities": count}
+    return {"files": count}
 ```
 
-Key rules:
-- **Use `os.walk` with `onerror` callback, not `rglob`.** Broken symlinks, WSL artifacts, and inaccessible directories crash `pathlib.rglob()`. `os.walk(onerror=lambda e: None)` skips them.
-- **Wrap connections in `try/finally`.** If extraction crashes mid-walk, the connection must close or subsequent runs hit "database is locked."
-- **Never load the full source into RAM.** Iterate and commit in batches.
-- **Use INSERT OR IGNORE** for idempotency (resume-safe).
-- **Return stats** so the pipeline can report progress and finalize provenance.
+Rules:
+- **Use `os.walk` with `onerror`, not `rglob`.** Broken symlinks crash `rglob`.
+- **Wrap connections in `try/finally`.** Always close on crash.
+- **Stream, never batch-load.** Iterate and commit periodically.
+- **Check for duplicates** before INSERT on tables without UNIQUE constraints (binaries, observations).
+- **Return stats** for pipeline provenance.
+
+### Idempotency
+
+Tables with UNIQUE constraints (`files` on `path`) can use `INSERT OR IGNORE`. Tables without UNIQUE constraints (`binaries`, `observations`) require an explicit existence check:
+
+```python
+existing = conn.execute(
+    "SELECT id FROM binaries WHERE file_id=?", (file_id,)
+).fetchone()
+if not existing:
+    conn.execute("INSERT INTO binaries (...) VALUES (...)", (...))
+```
+
+The test harness verifies this: second run must add zero entities.
+
+---
+
+## Registration
+
+### With Manifest (recommended)
+
+1. Create your parser module (e.g., `icarus/parsers/cloud/my_cloud.py`)
+2. Create a YAML manifest alongside it (e.g., `icarus/parsers/cloud/my_cloud.yaml`)
+3. Add to `icarus/parsers/__init__.py`:
+
+```python
+# In the _CLOUD_PARSERS list (or appropriate category):
+_CLOUD_PARSERS = [
+    ("cloud.cloudtrail", "CloudTrailParser"),
+    ("cloud.my_cloud", "MyCloudParser"),
+]
+```
+
+The parser is immediately available via CLI (`--parser cloud/my_cloud`) and auto-detection.
+
+### Quality Tiers
+
+| Tier | Requirements | Catalog |
+|------|-------------|---------|
+| `production` | All 4 harness tests pass, manifest validates, real-world validation | parsers.json |
+| `candidate` | Under evaluation, may have known issues | parsers-devel.json |
+| `prototype` | Proof of concept, incomplete | Not cataloged |
+| `private` | Internal use only | Not cataloged |
+
+### Test Harness
+
+4 mandatory quality gates for production parsers:
+
+```bash
+icarus parser test my_parser
+```
+
+1. **Golden output** — entity counts match baseline (tests/golden/my_parser.json)
+2. **Idempotency** — second run over same data adds zero entities
+3. **Schema conformance** — parser only writes to tables it declares in manifest
+4. **Zero-PII** — HYGEIA verify_clean passes on output
 
 ---
 
@@ -87,43 +199,29 @@ Key rules:
 
 Map your source's concepts to ICARUS tables:
 
-| ICARUS Table | Windows Maps To | Linux Maps To | Android Maps To | Network Maps To |
-|-------------|-----------------|---------------|-----------------|-----------------|
-| `files` | Filesystem | Filesystem | APK contents | — |
-| `binaries` | PE executables | ELF binaries | DEX/native libs | — |
-| `daemons` | Windows services | systemd units | Services in manifests | Listening services |
-| `entitlements` | Permissions/ACLs | Linux capabilities | Android permissions | Port/protocol |
-| `sandbox_profiles` | AppLocker policies | AppArmor profiles | SELinux policies | Firewall rules |
-| `sandbox_rules` | Policy rules | AppArmor rules | SELinux allow rules | iptables entries |
-| `kexts` | Kernel drivers | .ko modules | Kernel modules | — |
-| `frameworks` | DLLs | .so libraries | JARs/AARs | — |
+| ICARUS Table | Windows | Linux | CloudTrail | Your Parser |
+|-------------|---------|-------|------------|-------------|
+| `files` | Filesystem | Filesystem | -- | ? |
+| `binaries` | PE/DLL | ELF/.so | -- | ? |
+| `daemons` | Services | systemd units | IAM identities | ? |
+| `entitlements` | Permissions | Capabilities | IAM policies | ? |
+| `sandbox_profiles` | AppLocker | AppArmor | -- | ? |
+| `kexts` | Drivers | .ko modules | -- | ? |
+| `frameworks` | DLLs | .so libraries | -- | ? |
+| `observations` | -- | -- | API events | ? |
 
-Not every table needs data for every source type. A network scan has no `files` table — that's fine. Use what applies.
-
----
-
-## Registration
-
-Add your parser to `icarus/parsers/__init__.py`:
-
-```python
-from icarus.parsers.my_parser import MyParser
-PARSERS["my_parser"] = MyParser
-```
-
-The parser is immediately available via CLI (`--parser my_parser`) and API (`parser_name="my_parser"`).
+Not every table needs data. A CloudTrail parser only writes to `daemons` and `observations`. A network scanner might only use `daemons` (listening services) and `entitlements` (port/protocol). Use what applies.
 
 ---
 
 ## Parser Ideas
 
-| Source | identify() checks | What you'd extract |
-|--------|------------------|-------------------|
-| Android OTA | `META-INF/`, `system/app/` | APKs, permissions, intents, receivers, SELinux |
-| Docker image | `manifest.json`, layers | Layer contents, ENV vars, exposed ports, users |
-| Network scan | Nmap XML format | Hosts, ports, banners, OS fingerprints, certs |
+| Source | identify() Checks | Entities |
+|--------|-------------------|----------|
+| Android OTA | `META-INF/`, `system/app/` | APKs, permissions, intents, SELinux policies |
+| Docker image | `manifest.json`, layers | Layer contents, ENV, exposed ports, users |
+| Network scan | Nmap XML | Hosts, ports, banners, OS fingerprints |
 | Kubernetes | YAML manifests | Pods, RBAC, network policies, secrets refs |
-| API spec | OpenAPI/Swagger JSON | Endpoints, auth requirements, schemas |
-| Cloud IAM | AWS/GCP policy JSON | Roles, permissions, trust relationships |
-
-The framework handles storage, querying, diffing, and sanitization. Your parser just needs to extract and normalize.
+| API spec | OpenAPI/Swagger JSON | Endpoints, auth, schemas |
+| GCP IAM | GCP policy JSON | Roles, bindings, service accounts |
+| Azure AD | Azure policy JSON | Users, groups, role assignments |
