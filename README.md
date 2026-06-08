@@ -231,9 +231,9 @@ icarus diff old.db new.db --report changes.md
 ```
 
 ```python
-from icarus.core.pipeline import Pipeline
+from icarus.core.pipeline import create_default_pipeline
 
-p = Pipeline(source, output, parser_name="linux")
+p = create_default_pipeline(source, output, parser_name="linux")
 p.run()          # full run
 p.run(resume=True)  # resume from last checkpoint
 ```
@@ -246,6 +246,8 @@ p.run(resume=True)  # resume from last checkpoint
 | Search | FTS5 full-text with auto-sync triggers |
 | Extensibility | Drop in a parser, get the full engine |
 | Parsers | Windows (PE/DLL), Linux (ELF/systemd/.so), or write your own |
+| Traversal | `os.walk` with error callbacks — handles broken symlinks, inaccessible paths, WSL artifacts |
+| Provenance | Pipeline auto-finalizes version records: entity_count + completed_at on every run |
 | Test suite | 43 tests — schema, query, diff, pipeline, HYGEIA, provenance, parsers, entity resolution, observations |
 | CI | GitHub Actions: pytest (3.10/3.12/3.13 x ubuntu/windows/macos), ruff, mypy, bandit |
 
@@ -328,17 +330,20 @@ This is what makes ICARUS publishable. Without it, every output database is a do
 
 ## Real-World Validation
 
-Three real datasets, two platforms. No configuration, no prep — raw pipeline execution.
+Five real datasets, two platforms. No configuration, no prep — raw pipeline execution.
 
-| Dataset | Platform | Files | Data | Binaries | Runtime | PII | HYGEIA |
+| Dataset | Platform | Entities | Data | Binaries | Runtime | PII | HYGEIA |
 |---------|----------|------:|-----:|---------:|--------:|:---:|:------:|
+| **Full user profile** | Windows | 116,002 | 244 GB | 399 PE | 49s | **0** | **PASS** |
 | **Python 3.12** | Windows | 55,346 | 2,079 MB | 150 PE | 25s | **0** | **PASS** |
 | **Chrome profile** | Windows | 25,916 | 3,249 MB | 3 PE | 18s | **0** | **PASS** |
 | **Ubuntu /usr** | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | 52s | **0** | **PASS** |
 
-**177,443 entities across 18 GB of real data. Zero PII in any output database.**
+**293,445 entities across real-world data. Zero PII in any output database.**
 
-The Windows parser detects PE binaries (EXE/DLL) with architecture classification. The Linux parser detects ELF binaries, shared libraries (1,899 .so files), and systemd services (174 units). HYGEIA redacted 35 items from the Linux dataset (paths containing usernames) and verified zero residual findings.
+The full profile test scanned 6 sources (Documents, Downloads, a large project directory, GitHub CLI, 7-Zip, Python 3.12) into a single 59.6 MB database. HYGEIA redacted all `C:\Users\<username>` paths to `[REDACTED_USERNAME_PATH_WIN]` and verified zero residual findings. The parser handles broken symlinks (WSL `.venv/lib64`), inaccessible system paths, and connection cleanup on partial failures — all discovered and fixed during integration testing.
+
+The Windows parser detects PE binaries (EXE/DLL) with architecture classification. The Linux parser detects ELF binaries, shared libraries (1,899 .so files), and systemd services (174 units).
 
 Defense in depth: normalize at ingest, verify at output. Same engine, same power, responsible output.
 
@@ -414,6 +419,11 @@ icarus-framework/
 - **Two-graph architecture** — ontology graph (entities/relationships) + event graph (observations/resolution) in the same database, joined by cross-graph queries
 - **Observation diffing** — `IcarusDiffer.observation_diff()` and `IcarusQuery.observation_diff()` for cross-version event comparison
 - **Schema v4** — 5 new tables (observations, atoms, bags, bag_atoms, resolution_event_log), 7 new indexes, atoms_fts virtual table + triggers. Migration chain: v2→v3→v4
+- **Pipeline version finalization** — `_finalize_version_record()` auto-populates `entity_count` and `completed_at` on every run. Provenance is no longer write-once.
+- **Safe filesystem traversal** — Windows parser uses `os.walk(onerror=...)` instead of `pathlib.rglob()`. Handles broken symlinks (WSL `.venv/lib64`), inaccessible system paths, and permission errors without crashing.
+- **Connection safety** — `extract_entities()` uses `try/finally` to guarantee connection cleanup. No more database lock cascade on partial failures.
+- **`create_default_pipeline()`** — factory function wires up the standard phase sequence (init → ingest → relationships → verify → sanitize). `Pipeline` class is the bare orchestrator for custom phase sequences.
+- **116,002-entity validation** — full user profile test: 6 sources, 289 frameworks, 399 binaries, HYGEIA clean pass
 - **43 tests** — 22 new tests covering entity resolution, observations, blocking index, two-graph queries, and schema migration
 - **macOS CI** — test matrix now covers Ubuntu, Windows, and macOS
 
