@@ -481,6 +481,150 @@ def test_pattern_of_life(tmp_db):
         assert result.count == 1
 
 
+def _setup_resolver_db(tmp_db):
+    """Helper: init DB and insert a version record for atom ingestion."""
+    from icarus.core.schema import initialize_database
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "INSERT INTO versions (run_id, parser_name, source_path, started_at) "
+        "VALUES ('test-run-1', 'test', '/test', '2026-06-07T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_atom_immutable(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        atom_id = r.ingest_atom(1, "files", "key1", {"name": "a"})
+        assert atom_id == 1
+        conn = sqlite3.connect(str(tmp_db))
+        row = conn.execute("SELECT properties FROM atoms WHERE id = 1").fetchone()
+        assert "a" in row[0]
+        conn.close()
+
+
+def test_atom_unique_constraint(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        r.ingest_atom(1, "files", "key1", {"name": "a"})
+        with pytest.raises(sqlite3.IntegrityError):
+            r.ingest_atom(1, "files", "key1", {"name": "b"})
+
+
+def test_bag_creation(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
+        bag_id = r.create_bag("files", [a1, a2], canonical_key="merged")
+        assert bag_id >= 1
+
+        conn = sqlite3.connect(str(tmp_db))
+        count = conn.execute(
+            "SELECT atom_count FROM bags WHERE id = ?", (bag_id,)
+        ).fetchone()[0]
+        assert count == 2
+        conn.close()
+
+
+def test_merge_bags_logs_event(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
+        a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
+        b1 = r.create_bag("files", [a1])
+        b2 = r.create_bag("files", [a2, a3])
+
+        surviving = r.merge_bags([b1, b2], reason="duplicate entity")
+        assert surviving == b1
+
+        conn = sqlite3.connect(str(tmp_db))
+        events = conn.execute(
+            "SELECT event_type, reason FROM resolution_event_log WHERE event_type = 'merge'"
+        ).fetchall()
+        assert len(events) == 1
+        assert events[0][1] == "duplicate entity"
+
+        atom_count = conn.execute(
+            "SELECT atom_count FROM bags WHERE id = ?", (surviving,)
+        ).fetchone()[0]
+        assert atom_count == 3
+        conn.close()
+
+
+def test_split_bag_reversible(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
+        a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
+        bag_id = r.create_bag("files", [a1, a2, a3])
+
+        new_bag = r.split_bag(bag_id, [a3], reason="wrong merge")
+        assert new_bag != bag_id
+
+        conn = sqlite3.connect(str(tmp_db))
+        orig_count = conn.execute(
+            "SELECT atom_count FROM bags WHERE id = ?", (bag_id,)
+        ).fetchone()[0]
+        new_count = conn.execute(
+            "SELECT atom_count FROM bags WHERE id = ?", (new_bag,)
+        ).fetchone()[0]
+        assert orig_count == 2
+        assert new_count == 1
+
+        orig_bag_exists = conn.execute(
+            "SELECT id FROM bags WHERE id = ?", (bag_id,)
+        ).fetchone()
+        assert orig_bag_exists is not None
+        conn.close()
+
+
+def test_event_log_append_only(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        r.create_bag("files", [a1])
+
+    conn = sqlite3.connect(str(tmp_db))
+    events = conn.execute("SELECT * FROM resolution_event_log").fetchall()
+    assert len(events) == 1
+
+    event_id = events[0][0]
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO resolution_event_log (id, event_type, bag_id, atom_ids, timestamp) "
+            "VALUES (?, 'test', 1, '[]', '2026-01-01')", (event_id,)
+        )
+    conn.close()
+
+
+def test_unresolved_atoms(tmp_db):
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db)) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
+        a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
+
+        unresolved = r.unresolved_atoms("files")
+        assert len(unresolved) == 3
+
+        r.create_bag("files", [a1, a2])
+        unresolved = r.unresolved_atoms("files")
+        assert len(unresolved) == 1
+        assert a3 in unresolved
+
+
 def test_obs_fk_any_ontology_table(tmp_db):
     from icarus.core.schema import initialize_database
 
