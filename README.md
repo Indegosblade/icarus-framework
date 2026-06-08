@@ -229,6 +229,25 @@ This is what makes ICARUS publishable. Without it, every output database is a do
 
 ---
 
+## Real-World Validation
+
+ICARUS pointed at a Chrome user profile (2.3 GB, live browser data). No configuration, no prep — raw pipeline execution.
+
+| Metric | Result |
+|--------|--------|
+| Entities mapped | 25,162 files |
+| Data catalogued | 2,339 MB |
+| File types identified | JSON configs (523), logs (186), JS (361), LevelDB (120), HTML, CSS, SVG |
+| Runtime | 153 seconds (full pipeline including HYGEIA) |
+| PII in output | **0** |
+| HYGEIA verification | **PASS — zero residual findings** |
+
+The parser normalized 25,162 paths at extraction time (stripping absolute filesystem prefixes), then HYGEIA verified no PII leaked through. Defense in depth: normalize at ingest, verify at output.
+
+Same engine, same power, responsible output. That's the point.
+
+---
+
 ## Install
 
 ```bash
@@ -272,7 +291,8 @@ icarus-framework/
 │   │   └── differ.py         # Cross-version diff engine
 │   ├── parsers/
 │   │   ├── base.py           # Abstract parser interface
-│   │   └── ios.py            # iOS reference parser (7-phase)
+│   │   ├── ios.py            # iOS reference parser (7-phase)
+│   │   └── windows.py        # Windows application/directory parser
 │   └── integrations/
 │       └── hygeia.py         # HYGEIA sanitization layer
 ├── tests/                    # Pytest suite
