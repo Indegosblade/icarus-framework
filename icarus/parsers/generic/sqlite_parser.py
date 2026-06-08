@@ -58,12 +58,23 @@ class SqliteParser(BaseParser):
                                 ).fetchall()
                                 schema_info = ", ".join(t[0] for t in tables[:30])
                                 src_conn.close()
-                                conn.execute(
-                                    "INSERT OR IGNORE INTO observations "
-                                    "(entity_table,entity_id,observed_at,event_type,properties) "
-                                    "VALUES (?,?,datetime('now'),?,?)",
-                                    ("files", file_row[0], "schema_tables", schema_info),
-                                )
+                                dup = conn.execute(
+                                    "SELECT id FROM observations "
+                                    "WHERE entity_table=? AND entity_id=? "
+                                    "AND event_type=?",
+                                    ("files", file_row[0], "schema_tables"),
+                                ).fetchone()
+                                if not dup:
+                                    conn.execute(
+                                        "INSERT INTO observations "
+                                        "(entity_table,entity_id,"
+                                        "observed_at,event_type,"
+                                        "properties) "
+                                        "VALUES "
+                                        "(?,?,datetime('now'),?,?)",
+                                        ("files", file_row[0],
+                                         "schema_tables", schema_info),
+                                    )
                             except sqlite3.DatabaseError:
                                 pass
                     except (PermissionError, OSError):

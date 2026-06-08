@@ -54,13 +54,25 @@ class ArchiveParser(BaseParser):
                         if file_row:
                             contents = _list_archive(path)
                             if contents:
-                                conn.execute(
-                                    "INSERT OR IGNORE INTO observations "
-                                    "(entity_table,entity_id,observed_at,event_type,properties) "
-                                    "VALUES (?,?,datetime('now'),?,?)",
-                                    ("files", file_row[0], "archive_contents",
-                                     ", ".join(contents[:50])),
-                                )
+                                dup = conn.execute(
+                                    "SELECT id FROM observations "
+                                    "WHERE entity_table=? "
+                                    "AND entity_id=? "
+                                    "AND event_type=?",
+                                    ("files", file_row[0],
+                                     "archive_contents"),
+                                ).fetchone()
+                                if not dup:
+                                    conn.execute(
+                                        "INSERT INTO observations "
+                                        "(entity_table,entity_id,"
+                                        "observed_at,event_type,"
+                                        "properties) VALUES "
+                                        "(?,?,datetime('now'),?,?)",
+                                        ("files", file_row[0],
+                                         "archive_contents",
+                                         ", ".join(contents[:50])),
+                                    )
                     except (PermissionError, OSError):
                         continue
             conn.commit()
