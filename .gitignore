@@ -56,3 +56,6 @@ output/
 *.pem
 *.key
 .env
+
+# Internal planning docs
+prompts/
