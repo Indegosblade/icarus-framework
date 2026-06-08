@@ -1,0 +1,29 @@
+[
+  {
+    "parser_id": "linux",
+    "version": "1.0.0",
+    "quality_tier": "production",
+    "description": "Linux filesystem rootfs (debootstrap, container export, etc.)",
+    "specificity_level": 20,
+    "reliability": "B",
+    "entity_types": [
+      "files",
+      "binaries",
+      "daemons",
+      "frameworks"
+    ]
+  },
+  {
+    "parser_id": "windows",
+    "version": "1.0.0",
+    "quality_tier": "production",
+    "description": "Windows application directory or filesystem tree",
+    "specificity_level": 20,
+    "reliability": "B",
+    "entity_types": [
+      "files",
+      "binaries",
+      "frameworks"
+    ]
+  }
+]

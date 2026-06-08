@@ -3,42 +3,57 @@
 from pathlib import Path
 from typing import Optional
 
+from icarus.core.registry import ParserRegistry
 from icarus.parsers.base import BaseParser
+from icarus.parsers.manifest import load_manifest
 
-PARSERS = {}
+_REGISTRY = ParserRegistry()
+_PARSERS_DIR = Path(__file__).parent
 
 try:
     from icarus.parsers.windows import WindowsParser
-    PARSERS["windows"] = WindowsParser
+
+    _manifest = None
+    _yaml_path = _PARSERS_DIR / "windows.yaml"
+    if _yaml_path.exists():
+        try:
+            _manifest = load_manifest(_yaml_path)
+        except Exception:
+            pass
+    _REGISTRY.register(WindowsParser, _manifest)
 except ImportError:
     pass
 
 try:
     from icarus.parsers.linux import LinuxParser
-    PARSERS["linux"] = LinuxParser
+
+    _manifest = None
+    _yaml_path = _PARSERS_DIR / "linux.yaml"
+    if _yaml_path.exists():
+        try:
+            _manifest = load_manifest(_yaml_path)
+        except Exception:
+            pass
+    _REGISTRY.register(LinuxParser, _manifest)
 except ImportError:
     pass
 
 
 def get_parser(name: str) -> BaseParser:
     """Get a parser instance by name."""
-    if name not in PARSERS:
-        available = list(PARSERS.keys()) or ["(none registered)"]
-        raise ValueError(f"Unknown parser: '{name}'. Available: {available}")
-    return PARSERS[name]()
+    return _REGISTRY.get(name)
 
 
 def detect_parser(source: Path) -> Optional[str]:
     """Auto-detect parser for a source path. Returns parser name or None."""
-    for name, cls in PARSERS.items():
-        try:
-            if cls().identify(source):
-                return name
-        except (PermissionError, OSError):
-            continue
-    return None
+    return _REGISTRY.detect(source)
 
 
 def list_parsers() -> dict:
     """List all registered parsers with descriptions."""
-    return {name: cls().description for name, cls in PARSERS.items()}
+    return {p["name"]: p["description"] for p in _REGISTRY.list_all()}
+
+
+def get_registry() -> ParserRegistry:
+    """Get the global parser registry."""
+    return _REGISTRY
