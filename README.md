@@ -351,29 +351,17 @@ icarus-framework/
 
 ## Changelog
 
-### v3.0.0
-- Parser ecosystem with YAML manifests, JSON Schema validation, registry detection contest, two-tier catalog, 4-gate test harness
-- 8 production parsers: Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary
-- STIX 2.1 export for entities and diffs
-- `icarus parser` CLI: `validate`, `list`, `test`
+### v1.1.1 (2026-06-08) — Final release
 
-### v2.0.0
-- Entity resolution: Atom/Bag/EventLog pattern with FTS5 blocking index
-- Observations: temporal event layer with generic foreign key
-- Two-graph architecture: ontology graph + event graph
-- Schema v4 with migration chain v2 -> v3 -> v4
+Everything shipped in one sprint. This is the first and current stable release.
 
-### v1.2.0
-- Linux parser: ELF detection, architecture classification, systemd unit parsing
-
-### v1.1.0
-- 5-category diff engine
-- HYGEIA pipeline integration with `--skip-hygeia` flag
-- Windows parser: PE/DLL detection
-
-### v1.0.0
-- Core: pipeline with checkpoint/resume, schema with FTS5, query engine, cross-version differ
-- HYGEIA integration, cell-level provenance, CI
+- **Core:** Pipeline with checkpoint/resume, schema v4 with FTS5 full-text search, query engine with 6 intelligence views, cross-version differ
+- **Parsers:** 8 production parsers (Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary) with YAML manifests, JSON Schema validation, registry detection contest, two-tier catalog, 4-gate test harness
+- **Entity resolution:** Atom/Bag/EventLog pattern with FTS5 blocking index, merge/split with full reversibility
+- **Observations:** Temporal event layer with generic foreign keys, two-graph architecture (ontology + events)
+- **Integrations:** HYGEIA PII sanitization as a pipeline phase, STIX 2.1 export for entities and diffs
+- **CLI:** `build`, `query`, `diff`, `parser list/validate/test`
+- **Quality:** 77 tests, 9-job CI matrix (3 OS x 3 Python versions), ruff + mypy + bandit
 
 ---
 
