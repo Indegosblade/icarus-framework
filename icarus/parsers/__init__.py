@@ -12,6 +12,9 @@ _REGISTRY = ParserRegistry()
 _PARSERS_DIR = Path(__file__).parent
 
 _ALL_PARSERS = [
+    ("icarus.parsers.obsidian_parser", "ObsidianParser", "obsidian_parser.yaml"),
+    ("icarus.parsers.source_parser", "SourceParser", "source_parser.yaml"),
+    ("icarus.parsers.node_parser", "NodeParser", "node_parser.yaml"),
     ("icarus.parsers.windows", "WindowsParser", "windows.yaml"),
     ("icarus.parsers.linux", "LinuxParser", "linux.yaml"),
     ("icarus.parsers.cloud.cloudtrail", "CloudTrailParser", "cloud/cloudtrail.yaml"),
@@ -21,6 +24,8 @@ _ALL_PARSERS = [
     ("icarus.parsers.generic.archive_parser", "ArchiveParser", "generic/archive_parser.yaml"),
     ("icarus.parsers.generic.binary_entropy_parser", "BinaryEntropyParser",
      "generic/binary_entropy_parser.yaml"),
+    ("icarus.parsers.javascript_parser", "JavaScriptParser",
+     "javascript_parser.yaml"),
 ]
 
 for _mod_path, _cls_name, _yaml_name in _ALL_PARSERS:
