@@ -1,5 +1,17 @@
 # Getting Started
 
+## Requirements
+
+| Dependency | Version | Notes |
+|-----------|---------|-------|
+| Python | >= 3.10 | Tested on 3.10, 3.12, 3.13 |
+| SQLite | >= 3.35 | Required for FTS5. Ships with Python on all platforms. |
+| [HYGEIA](https://github.com/Indegosblade/HYGEIA) | v3.14.0 | PII sanitization. Auto-installed. |
+| [PyYAML](https://pyyaml.org/) | >= 6.0 | Parser manifest loading |
+| [jsonschema](https://python-jsonschema.readthedocs.io/) | >= 4.20 | Manifest validation |
+
+No native extensions or system-level dependencies beyond Python.
+
 ## Install
 
 ```bash
@@ -17,16 +29,6 @@ Development (adds pytest, ruff, mypy, bandit):
 ```bash
 pip install -e ".[dev]"
 ```
-
-### Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| Python | 3.10+ | Runtime |
-| SQLite | 3.35+ | FTS5 support |
-| HYGEIA | latest | PII sanitization (auto-installed) |
-| PyYAML | >=6.0 | Parser manifest loading |
-| jsonschema | >=4.20 | Manifest validation |
 
 ## First Scan
 
