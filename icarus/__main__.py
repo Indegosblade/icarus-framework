@@ -13,9 +13,6 @@ def cmd_build(args):
     if not source.exists():
         print(f"ERROR: Source path does not exist: {source}", file=sys.stderr)
         sys.exit(1)
-    if not source.is_dir():
-        print(f"ERROR: Source must be a directory: {source}", file=sys.stderr)
-        sys.exit(1)
 
     parser_name = args.parser
     if parser_name is None:
