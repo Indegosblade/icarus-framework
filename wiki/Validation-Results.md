@@ -1,8 +1,10 @@
 # Validation Results
 
-Test run data from actual pipeline executions.
+Test run data from actual pipeline executions against real directories.
 
-## v3.0.0
+## v1.1.1
+
+### Large-scale scan
 
 **Source:** Windows user profile directory
 **Parser:** Windows (auto-detected)
@@ -17,9 +19,7 @@ Test run data from actual pipeline executions.
 | PII findings pre-sanitize | 24,822 |
 | PII findings post-sanitize | 0 |
 
----
-
-## v2.0.0
+### Cross-platform validation
 
 4 datasets across Windows and Linux:
 
@@ -29,16 +29,6 @@ Test run data from actual pipeline executions.
 | Python 3.12 | Windows | 55,346 | 2,079 MB | 150 PE | 0 |
 | Chrome profile | Windows | 25,916 | 3,249 MB | 3 PE | 0 |
 | Ubuntu /usr | Linux (WSL2) | 96,181 | 12,834 MB | 1,111 ELF | 0 |
-
----
-
-## v1.2.0
-
-| Dataset | Platform | Entities | Binaries | PII Post-Sanitize |
-|---------|----------|------:|---------:|:---:|
-| Python 3.12 | Windows | 55,346 | 150 PE | 0 |
-| Chrome profile | Windows | 25,916 | 3 PE | 0 |
-| Ubuntu /usr | Linux | 96,181 | 1,111 ELF | 0 |
 
 ---
 

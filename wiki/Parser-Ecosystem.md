@@ -1,6 +1,6 @@
 # Parser Ecosystem
 
-The parser ecosystem is the v3.0.0 architecture for managing, validating, and testing parsers at scale.
+The parser ecosystem manages, validates, and tests parsers at scale.
 
 ## Components
 
