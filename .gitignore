@@ -59,3 +59,7 @@ output/
 
 # Internal planning docs
 prompts/
+
+# Local-only parsers (not released)
+icarus/parsers/node_parser.py
+icarus/parsers/node_parser.yaml
