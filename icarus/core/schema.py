@@ -64,7 +64,7 @@ def _apply_performance_pragmas(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA cache_size = -{FALLBACK_CACHE_KB}")
         conn.execute(f"PRAGMA mmap_size = {FALLBACK_MMAP_BYTES}")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 ENTITY_TABLES = (
     "files", "binaries", "daemons", "entitlements",
@@ -272,6 +272,17 @@ CREATE TABLE IF NOT EXISTS resolution_event_log (
     operator TEXT,
     timestamp TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS mach_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    daemon_id INTEGER NOT NULL REFERENCES daemons(id),
+    service_name TEXT NOT NULL,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED',
+    UNIQUE(daemon_id, service_name)
+);
 """
 
 INDEXES = """
@@ -298,6 +309,8 @@ CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type);
 CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id);
 CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type);
 CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id);
+CREATE INDEX IF NOT EXISTS idx_mach_daemon ON mach_services(daemon_id);
+CREATE INDEX IF NOT EXISTS idx_mach_service ON mach_services(service_name);
 """
 
 FTS_SCHEMA = """
@@ -509,12 +522,40 @@ def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Additive migration: adds the normalized mach_services table.
+
+    mach_services makes the daemon <-> Mach service relationship a first-class
+    join (service_name -> daemon_id) instead of a serialized TEXT blob on
+    daemons.mach_services, which is the key pivot for attack-surface queries.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mach_services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            daemon_id INTEGER NOT NULL REFERENCES daemons(id),
+            service_name TEXT NOT NULL,
+            source_version_id INTEGER REFERENCES versions(id),
+            confidence REAL DEFAULT 1.0,
+            observed_time TEXT,
+            marking TEXT DEFAULT 'UNCLASSIFIED',
+            UNIQUE(daemon_id, service_name)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mach_daemon ON mach_services(daemon_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mach_service ON mach_services(service_name)")
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("schema_version", "5")
+    )
+    conn.commit()
+
+
 def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
     """
     Create and initialize an ICARUS database.
 
-    Handles fresh creation (v3) and migration from existing v2 databases.
-    Returns stats dict with table count and schema version.
+    Creates a fresh v5 database, or migrates an existing v2/v3/v4 database
+    forward. Returns stats dict with table count and schema version.
     """
     conn = sqlite3.connect(str(db_path))
     try:
@@ -531,8 +572,12 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
         if existing_version == 2:
             migrate_v2_to_v3(conn)
             migrate_v3_to_v4(conn)
+            migrate_v4_to_v5(conn)
         elif existing_version == 3:
             migrate_v3_to_v4(conn)
+            migrate_v4_to_v5(conn)
+        elif existing_version == 4:
+            migrate_v4_to_v5(conn)
         elif existing_version is None or existing_version < 2:
             conn.executescript(CORE_SCHEMA)
             conn.executescript(INDEXES)

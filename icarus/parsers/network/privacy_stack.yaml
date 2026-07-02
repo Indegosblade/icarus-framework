@@ -1,0 +1,47 @@
+parser_id: "network/privacy_stack"
+version: "1.0.0"
+spec_version: "icarus-parser/1.0"
+author: "Indegosblade"
+license: "PolyForm-Noncommercial-1.0.0"
+quality_tier: "candidate"
+description: "Home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard, deploy scripts)"
+identify:
+  specificity_level: 10
+  markers:
+    - type: "path"
+      path: "CLAUDE.md"
+      description: "Master context file with service list and architecture"
+    - type: "path"
+      path: "HANDOFF.md"
+      description: "Operational handoff with credentials and config notes"
+    - type: "path"
+      path: "dashboard/app.py"
+      description: "Flask dashboard with Pi-hole API integration"
+  confidence: 0.95
+consumes:
+  - "text/x-python"
+  - "text/x-shellscript"
+  - "text/x-yaml"
+  - "application/x-wireguard-config"
+produces:
+  entity_types:
+    - files
+    - binaries
+    - daemons
+    - entitlements
+    - observations
+    - frameworks
+  event_types:
+    - "credential_found"
+    - "ip_address"
+    - "endpoint"
+    - "config_reference"
+dependencies:
+  tools: []
+  python: []
+reliability: "B"
+default_confidence: 0.85
+tests:
+  fixtures_dir: "tests/fixtures/network_privacy_stack/"
+  min_entities: 1
+  golden_output: "tests/golden/network_privacy_stack.json"

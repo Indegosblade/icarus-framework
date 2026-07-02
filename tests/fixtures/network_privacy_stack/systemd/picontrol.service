@@ -1,0 +1,10 @@
+[Unit]
+Description=Pi Control Dashboard
+
+[Service]
+ExecStart=/opt/picontrol/app.py
+User=www-data
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

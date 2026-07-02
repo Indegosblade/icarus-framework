@@ -103,9 +103,16 @@ class Pipeline:
             conn.close()
 
     def _create_version_record(self):
-        """Record this pipeline run in the versions table."""
+        """Record this pipeline run in the versions table.
+
+        Ensures the database and schema exist first. On a fresh build the init
+        phase has not run yet when this is called, so without this guard the
+        version record — and therefore all run provenance — was silently
+        skipped, leaving the versions table empty on every first build.
+        """
         if not self.output.exists():
-            return
+            from icarus.core.schema import initialize_database
+            initialize_database(self.output)
         conn = sqlite3.connect(str(self.output))
         try:
             conn.execute("""

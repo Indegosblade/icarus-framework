@@ -1,0 +1,3 @@
+https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+https://v.firebog.net/hosts/Easyprivacy.txt
+https://someonewhocares.org/hosts/zero/hosts
