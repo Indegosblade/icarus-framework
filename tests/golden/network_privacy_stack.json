@@ -1,0 +1,11 @@
+{
+  "parser_id": "network/privacy_stack",
+  "entity_counts": {
+    "files": 8,
+    "binaries": 2,
+    "daemons": 6,
+    "entitlements": 4,
+    "observations": 10,
+    "frameworks": 6
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "parser_id": "network/deploy_scripts",
+  "entity_counts": {
+    "files": 2,
+    "binaries": 1,
+    "daemons": 2,
+    "observations": 11,
+    "entitlements": 2
+  }
+}
