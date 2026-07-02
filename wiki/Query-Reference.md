@@ -14,6 +14,11 @@ with IcarusQuery("intel.db") as q:
     # Service -> binary -> permission map
     q.service_map()
 
+    # Normalized Mach service -> owning daemon (the reachability pivot)
+    q.mach_service_owners()
+    # ...or filter service names with a SQL LIKE pattern
+    q.mach_service_owners("com.apple.%")
+
     # Kernel-reachable entry points from userland
     q.kernel_surface()
 
@@ -25,6 +30,9 @@ with IcarusQuery("intel.db") as q:
 
     # Permission/entitlement distribution across binaries
     q.privileged_entitlements()
+
+    # Daemons whose executable binary holds a matching entitlement key (LIKE)
+    q.daemons_with_entitlement("com.apple.private.%")
 ```
 
 ## Full-Text Search

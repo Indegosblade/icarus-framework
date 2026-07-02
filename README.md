@@ -7,6 +7,8 @@
 
 A modular framework for extracting entities from structured data sources, resolving them across versions, and producing queryable intelligence databases. One command in, one SQLite database out.
 
+Parsers cover Windows, Linux, cloud audit logs, and **iOS/macOS root filesystems** — the last maps the launchd daemon, Mach-service, and entitlement attack surface for Apple-platform security research (validated on a live iOS 27.0 IPSW).
+
 ```
 Source directory --> Parser --> Entity graph --> SQLite database
                                                      |
@@ -141,6 +143,8 @@ with IcarusQuery("intel.db") as q:
     q.service_map()               # Service -> binary -> permission mapping
     q.kernel_surface()            # Kernel-reachable entry points
     q.escape_surface()            # Privilege escalation paths
+    q.mach_service_owners("com.apple.%")               # Mach service -> owning daemon
+    q.daemons_with_entitlement("%iokit-user-client%")  # Daemons holding an entitlement
     results = q.search("config", table="daemons")
 
 # Diff two versions
@@ -164,20 +168,25 @@ export_to_stix(Path("intel.db"), Path("bundle.json"))
 
 ## Parsers
 
-8 production parsers. Auto-detection runs each parser's `identify()` method against the source; the most specific match wins.
+11 parsers — 8 production, 3 candidate. Auto-detection runs each parser's `identify()` method against the source; the most specific match (lowest specificity number) wins.
 
-| Parser | Specificity | Description |
-|--------|:-----------:|-------------|
-| `cloud/aws/cloudtrail` | 5 | AWS CloudTrail JSON audit logs — IAM identities, API events, error patterns |
-| `windows` | 20 | Windows directories — PE/DLL binaries, services, frameworks, file metadata |
-| `linux` | 20 | Linux rootfs — ELF binaries, systemd units, shared libraries, capabilities |
-| `generic/json` | 100 | JSON file catalog with top-level key extraction |
-| `generic/xml` | 100 | XML file catalog |
-| `generic/sqlite` | 100 | SQLite database catalog with schema discovery |
-| `generic/archive` | 100 | Archive catalog (.zip/.tar/.gz) with contents listing |
-| `generic/binary` | 100 | Catch-all — catalogs any directory with files |
+| Parser | Tier | Spec | Description |
+|--------|------|:----:|-------------|
+| `cloud/aws/cloudtrail` | production | 5 | AWS CloudTrail JSON audit logs — IAM identities, API events, error patterns |
+| `macos` | candidate | 8 | macOS / iOS root filesystem — launchd daemons, Mach services, entitlements, kexts, frameworks |
+| `network/privacy_stack` | candidate | 10 | Home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard) |
+| `network/deploy_scripts` | candidate | 15 | Paramiko deploy/fix scripts for remote server management |
+| `windows` | production | 20 | Windows directories — PE/DLL binaries, services, frameworks, file metadata |
+| `linux` | production | 20 | Linux rootfs — ELF binaries, systemd units, shared libraries, capabilities |
+| `generic/json` | production | 100 | JSON file catalog with top-level key extraction |
+| `generic/xml` | production | 100 | XML file catalog |
+| `generic/sqlite` | production | 100 | SQLite database catalog with schema discovery |
+| `generic/archive` | production | 100 | Archive catalog (.zip/.tar/.gz) with contents listing |
+| `generic/binary` | production | 100 | Catch-all — catalogs any directory with files |
 
-Lower specificity wins. CloudTrail (5) beats Windows (20) beats generic (100). If no specific parser matches, a generic fallback always catches it.
+Lower specificity wins. CloudTrail (5) beats macOS/iOS (8) beats Windows (20) beats generic (100). If no specific parser matches, a generic fallback always catches it.
+
+The **`macos`** parser maps the iOS/macOS daemon attack surface: it reads launchd plists into daemons plus normalized Mach services, and extracts embedded entitlements straight from each Mach-O code signature with a self-contained stdlib reader (`icarus/parsers/macho.py`) — no `codesign`/`ldid` required. See [Validation Results](wiki/Validation-Results.md) for a full iOS 27.0 run.
 
 Each parser ships with a YAML manifest validated by JSON Schema at load time. Manifests declare quality tier, specificity, [Admiralty reliability grade](https://en.wikipedia.org/wiki/Admiralty_code), and test configuration. A 4-gate test harness enforces golden output, idempotency, schema conformance, and zero-PII verification before a parser reaches production tier.
 
@@ -187,16 +196,18 @@ See [about/PARSERS.md](about/PARSERS.md) for the parser development guide.
 
 ## Schema
 
-15 normalized tables, 3 FTS5 full-text indexes, 3 intelligence views. Schema version 4 with automatic migration from v2 and v3.
+16 normalized tables, 3 FTS5 full-text indexes, 3 intelligence views. Schema version 5 with automatic migration from v2, v3, and v4.
 
 | Layer | Tables |
 |-------|--------|
-| Ontology | `files`, `binaries`, `daemons`, `entitlements`, `sandbox_profiles`, `sandbox_rules`, `kexts`, `frameworks` |
+| Ontology | `files`, `binaries`, `daemons`, `mach_services`, `entitlements`, `sandbox_profiles`, `sandbox_rules`, `kexts`, `frameworks` |
 | Infrastructure | `metadata`, `versions` |
 | Events | `observations` |
 | Resolution | `atoms`, `bags`, `bag_atoms`, `resolution_event_log` |
 | Search | `files_fts`, `daemons_fts`, `atoms_fts` |
 | Views | `v_sandbox_escape_surface`, `v_kernel_attack_surface`, `v_test_binaries` |
+
+`mach_services` (added in v5) normalizes each launchd job's advertised Mach services into rows — the reachability pivot from a Mach service name to the daemon that vends it, and the join behind `v_sandbox_escape_surface`.
 
 Every entity row carries cell-level provenance: `source_version_id` (FK to pipeline run), `confidence` (0.0-1.0), `observed_time` (ISO 8601), and `marking` (UNCLASSIFIED / PII / SENSITIVE / REDACTED).
 
@@ -232,7 +243,7 @@ See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and exte
 pytest tests/ -x -q
 ```
 
-77 tests across 8 modules covering schema, queries, diffing, pipeline, entity resolution, observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, and STIX export.
+99 tests across 10 modules covering schema, queries, diffing, pipeline, entity resolution, observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, and STIX export.
 
 CI runs the full test matrix on every push:
 
@@ -303,7 +314,7 @@ icarus-framework/
 │   ├── __main__.py               CLI entry point
 │   ├── core/
 │   │   ├── pipeline.py           Phase orchestrator with checkpoint/resume
-│   │   ├── schema.py             SQLite schema v4, FTS5, migrations
+│   │   ├── schema.py             SQLite schema v5, FTS5, migrations
 │   │   ├── query.py              Query engine with 6 intelligence views
 │   │   ├── differ.py             Cross-version diff engine
 │   │   ├── resolver.py           Entity resolution (Atom/Bag/EventLog)
@@ -314,14 +325,17 @@ icarus-framework/
 │   │   ├── testing.py            4-gate test harness
 │   │   ├── windows.py            Windows parser (PE/DLL)
 │   │   ├── linux.py              Linux parser (ELF/systemd)
-│   │   ├── cloud/                Cloud parsers
+│   │   ├── macos.py              macOS/iOS parser (launchd daemons, Mach services)
+│   │   ├── macho.py              Self-contained Mach-O reader (arch, entitlements)
+│   │   ├── cloud/                Cloud parsers (aws/cloudtrail)
+│   │   ├── network/              Network stack parsers (privacy_stack, deploy_scripts)
 │   │   ├── generic/              Fallback parsers (json, xml, sqlite, archive, binary)
 │   │   ├── catalog/              Two-tier parser catalog
 │   │   └── schema/               Manifest JSON Schema
 │   └── integrations/
 │       ├── hygeia.py             PII sanitization
 │       └── stix_export.py        STIX 2.1 export
-├── tests/                        77 tests
+├── tests/                        99 tests
 ├── examples/                     Custom parser template
 ├── schema/                       Standalone SQL reference
 ├── about/                        Architecture and parser docs
@@ -346,14 +360,25 @@ icarus-framework/
 | [wiki/Parser-Ecosystem.md](wiki/Parser-Ecosystem.md) | Manifests, registry, test harness, quality tiers |
 | [wiki/STIX-Export.md](wiki/STIX-Export.md) | STIX 2.1 mapping, custom extensions, bundle format |
 | [wiki/Validation-Results.md](wiki/Validation-Results.md) | Test run data from real pipeline executions |
+| [docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md) | Multi-agent production-readiness audit — findings, fixes, backlog |
 
 ---
 
 ## Changelog
 
-### v1.1.1 (2026-06-08) — Final release
+### v1.2.0 (2026-07-02) — iOS/macOS attack-surface mapping + production hardening
 
-Everything shipped in one sprint. This is the first and current stable release.
+- **New `macos` parser** — extracts the iOS/macOS launchd daemon, Mach-service, and entitlement attack surface from an extracted root filesystem. A self-contained stdlib Mach-O reader (`macho.py`) pulls embedded entitlements straight from the code signature — no `codesign`/`ldid`. Each daemon is linked to its executable binary.
+- **Schema v5** — new `mach_services` table (the Mach-service → daemon reachability pivot); automatic v4→v5 migration.
+- **New query helpers** — `mach_service_owners()`, `daemons_with_entitlement()`.
+- **Network parsers** — `network/privacy_stack`, `network/deploy_scripts` (candidate tier). CloudTrail relocated to `cloud/aws/cloudtrail`.
+- **Production hardening** — multi-agent readiness audit ([docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md)): provenance fix, input-size caps, symlink-safe hashing, hardened CloudTrail/JSON/archive parsing, LF normalization.
+- **Real-world validation** — a full intelligence database built from a live iOS 27.0 (24A5370h, iPhone 15 Pro) IPSW: 656 daemons, 2,375 Mach services, 55,160 entitlements, 3,763 binaries. See [Validation Results](wiki/Validation-Results.md).
+- **Quality** — 99 tests, 9-job CI matrix, ruff + mypy + bandit clean.
+
+### v1.1.1 (2026-06-08) — First stable release
+
+Everything shipped in one sprint.
 
 - **Core:** Pipeline with checkpoint/resume, schema v4 with FTS5 full-text search, query engine with 6 intelligence views, cross-version differ
 - **Parsers:** 8 production parsers (Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary) with YAML manifests, JSON Schema validation, registry detection contest, two-tier catalog, 4-gate test harness

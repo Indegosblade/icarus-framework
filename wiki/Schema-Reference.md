@@ -1,6 +1,6 @@
 # Schema Reference
 
-ICARUS uses SQLite with schema version 4. 15 normalized tables, 3 FTS5 indexes, 3 intelligence views.
+ICARUS uses SQLite with schema version 5. 16 normalized tables, 3 FTS5 indexes, 3 intelligence views.
 
 ## Entity Tables
 
@@ -63,6 +63,19 @@ Services, launch daemons, systemd units, IAM identities.
 | session_type | TEXT | Session type |
 | + provenance columns | | |
 
+### mach_services
+
+Normalized launchd `MachServices`. One row per Mach service name a daemon vends — the reachability pivot from a Mach service name to the daemon that answers it. Populates a first-class join instead of parsing the serialized `daemons.mach_services` TEXT blob.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INTEGER | Primary key |
+| daemon_id | INTEGER | FK to daemons (NOT NULL) |
+| service_name | TEXT | Mach service name (NOT NULL) |
+| + provenance columns | | |
+
+`UNIQUE(daemon_id, service_name)`. Provenance `confidence` defaults to 1.0, `marking` to UNCLASSIFIED.
+
 ### entitlements, sandbox_profiles, sandbox_rules, kexts, frameworks
 
 Similar structure — see `schema/icarus_schema.sql` for full DDL.
@@ -78,7 +91,7 @@ Key-value store for database metadata.
 | key | TEXT | Primary key |
 | value | TEXT | |
 
-Always contains: `schema_version` (currently "4"), `source` (source path).
+Always contains: `schema_version` (currently "5"), `source` (source path).
 
 ### versions
 
@@ -142,10 +155,10 @@ Auto-synced via INSERT/DELETE triggers.
 
 | View | What It Shows |
 |------|--------------|
-| v_sandbox_escape_surface | High-privilege entities reachable from low-privilege |
-| v_kernel_attack_surface | Kernel-reachable entry points from userland |
-| v_test_binaries | Test/debug binaries left in production builds |
+| v_sandbox_escape_surface | Daemons with Mach services but no launchd sandbox profile (daemon -> binary -> entitlements) |
+| v_kernel_attack_surface | Kexts exposing a user client (has_user_client = 1) |
+| v_test_binaries | Binaries with test/debug in their path or bundle ID |
 
 ## Migration Chain
 
-v2 -> v3 -> v4. Applied automatically when opening an older database.
+v2 -> v3 -> v4 -> v5. Applied automatically when opening an older database.
