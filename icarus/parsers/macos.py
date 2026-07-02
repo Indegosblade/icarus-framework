@@ -134,18 +134,19 @@ class MacosParser(BaseParser):
                     st = path.stat()
                 except (OSError, PermissionError):
                     continue
-                if not path.is_file() or path.is_symlink():
-                    # catalog symlinks as files but don't parse them
-                    pass
+                # Never dereference symlinks — a link may target a file outside
+                # the source tree. Catalog it, but don't read its content.
+                is_link = path.is_symlink()
                 try:
                     rel = self._rel_path(path, source)
                     ext = path.suffix.lower()
                     is_macho = False
-                    try:
-                        with open(path, "rb") as fh:
-                            is_macho = is_macho_magic(fh.read(4))
-                    except (OSError, PermissionError):
-                        is_macho = False
+                    if not is_link:
+                        try:
+                            with open(path, "rb") as fh:
+                                is_macho = is_macho_magic(fh.read(4))
+                        except (OSError, PermissionError):
+                            is_macho = False
                     file_type = "binary" if is_macho else FILE_TYPES.get(ext, "other")
 
                     conn.execute(

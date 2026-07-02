@@ -17,7 +17,8 @@ consumes:
   - "application/json"
 produces:
   entity_types: ["files", "daemons", "observations"]
-  event_types: ["api_call", "console_login", "assume_role", "console_signin"]
+  # event_type stores the raw AWS eventName; these are representative examples.
+  event_types: ["ConsoleLogin", "CreateUser", "AssumeRole", "DescribeInstances"]
 dependencies:
   tools: []
   python: []

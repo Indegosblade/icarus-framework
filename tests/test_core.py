@@ -217,6 +217,35 @@ def test_pipeline_checkpoint_resume():
         assert call_log == []
 
 
+def test_pipeline_populates_version_record(tmp_path):
+    """Regression: a fresh build must record a finalized version row.
+
+    Previously _create_version_record ran before the init phase created the
+    DB, so the versions table stayed empty and provenance was silently lost.
+    """
+    from icarus.core.pipeline import create_default_pipeline
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "test.exe").write_bytes(b"MZ" + b"\x00" * 200)
+    out = tmp_path / "out.db"
+    create_default_pipeline(
+        src, out, parser_name="windows", skip_hygeia=True
+    ).run(resume=False)
+
+    conn = sqlite3.connect(str(out))
+    try:
+        rows = conn.execute(
+            "SELECT parser_name, entity_count, completed_at FROM versions"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "windows"
+    assert rows[0][1] > 0
+    assert rows[0][2] is not None
+
+
 def test_no_personal_data():
     personal_patterns = [
         r"[A-Z][a-z]+ [A-Z][a-z]+rada",
