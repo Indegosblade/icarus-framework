@@ -1,52 +1,120 @@
-"""ICARUS parsers — pluggable data source modules."""
+"""ICARUS parsers — pluggable data source modules.
+
+Parsers are discovered automatically at import time; the engine references no
+parser by name. Every concrete :class:`BaseParser` subclass found anywhere
+under this package is registered — including local-only parsers placed in the
+gitignored ``icarus/parsers/private/`` package — as is any parser advertised
+through the ``icarus.parsers`` entry-point group by an installed distribution.
+A parser's manifest is its sibling ``<module>.yaml`` when one is present.
+
+Discovery failures (a broken or half-written local parser, an unloadable
+manifest) are logged and skipped, never silently swallowed, so a bad plugin
+degrades a single parser instead of hiding the whole registry.
+"""
 
 import importlib
+import inspect
+import logging
+import pkgutil
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from icarus.core.registry import ParserRegistry
 from icarus.parsers.base import BaseParser
-from icarus.parsers.manifest import load_manifest
+from icarus.parsers.manifest import ParserManifest, load_manifest
+
+log = logging.getLogger("icarus.parsers")
 
 _REGISTRY = ParserRegistry()
 _PARSERS_DIR = Path(__file__).parent
 
-_ALL_PARSERS = [
-    ("icarus.parsers.obsidian_parser", "ObsidianParser", "obsidian_parser.yaml"),
-    ("icarus.parsers.source_parser", "SourceParser", "source_parser.yaml"),
-    ("icarus.parsers.node_parser", "NodeParser", "node_parser.yaml"),
-    ("icarus.parsers.windows", "WindowsParser", "windows.yaml"),
-    ("icarus.parsers.linux", "LinuxParser", "linux.yaml"),
-    ("icarus.parsers.macos", "MacosParser", "macos.yaml"),
-    ("icarus.parsers.cloud.aws.cloudtrail", "CloudTrailParser", "cloud/aws/cloudtrail.yaml"),
-    ("icarus.parsers.generic.json_parser", "JsonParser", "generic/json_parser.yaml"),
-    ("icarus.parsers.generic.xml_parser", "XmlParser", "generic/xml_parser.yaml"),
-    ("icarus.parsers.generic.sqlite_parser", "SqliteParser", "generic/sqlite_parser.yaml"),
-    ("icarus.parsers.generic.archive_parser", "ArchiveParser", "generic/archive_parser.yaml"),
-    ("icarus.parsers.generic.binary_entropy_parser", "BinaryEntropyParser",
-     "generic/binary_entropy_parser.yaml"),
-    ("icarus.parsers.javascript_parser", "JavaScriptParser",
-     "javascript_parser.yaml"),
-    ("icarus.parsers.network.privacy_stack", "PrivacyStackParser",
-     "network/privacy_stack.yaml"),
-    ("icarus.parsers.network.deploy_scripts", "DeployScriptsParser",
-     "network/deploy_scripts.yaml"),
-]
+# Framework infrastructure that lives in this package but is not a parser.
+_SKIP_LEAF = {"base", "manifest", "testing", "macho"}
+_SKIP_PKG = {"catalog", "schema"}
 
-for _mod_path, _cls_name, _yaml_name in _ALL_PARSERS:
+
+def _concrete_parsers(module: object) -> Iterator[type]:
+    """Yield concrete BaseParser subclasses actually defined in ``module``."""
+    for _, obj in inspect.getmembers(module, inspect.isclass):
+        if (
+            issubclass(obj, BaseParser)
+            and obj is not BaseParser
+            and not inspect.isabstract(obj)
+            and obj.__module__ == getattr(module, "__name__", None)
+        ):
+            yield obj
+
+
+def _manifest_for(module: object) -> Optional[ParserManifest]:
+    """Load the sibling ``<module>.yaml`` manifest, or None if absent/invalid."""
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return None
+    manifest_path = Path(module_file).with_suffix(".yaml")
+    if not manifest_path.exists():
+        return None
     try:
-        _mod = importlib.import_module(_mod_path)
-        _cls = getattr(_mod, _cls_name)
-        _manifest = None
-        _yaml_path = _PARSERS_DIR / _yaml_name
-        if _yaml_path.exists():
-            try:
-                _manifest = load_manifest(_yaml_path)
-            except Exception:
-                pass
-        _REGISTRY.register(_cls, _manifest)
-    except ImportError:
-        pass
+        return load_manifest(manifest_path)
+    except Exception as exc:  # bad YAML / missing jsonschema must warn, not crash import
+        log.warning("Parser manifest %s failed to load: %s", manifest_path.name, exc)
+        return None
+
+
+def _register(parser_cls: type, manifest: Optional[ParserManifest]) -> None:
+    try:
+        _REGISTRY.register(parser_cls, manifest)
+    except Exception as exc:  # a parser whose __init__/name fails must not abort discovery
+        log.warning(
+            "Parser %s failed to register: %s",
+            getattr(parser_cls, "__name__", parser_cls),
+            exc,
+        )
+
+
+def _register_directory_parsers() -> None:
+    """Walk this package tree and register every parser class found."""
+    def _on_error(name: str) -> None:
+        log.warning("Could not import parser package %s during discovery", name)
+
+    for modinfo in pkgutil.walk_packages(
+        [str(_PARSERS_DIR)], prefix=__name__ + ".", onerror=_on_error
+    ):
+        segments = modinfo.name.split(".")
+        if modinfo.ispkg or segments[-1] in _SKIP_LEAF or _SKIP_PKG.intersection(segments):
+            continue
+        try:
+            module = importlib.import_module(modinfo.name)
+        except Exception as exc:  # a broken local parser must not break the framework
+            log.warning("Skipping parser module %s: %s", modinfo.name, exc)
+            continue
+        manifest = _manifest_for(module)
+        for cls in _concrete_parsers(module):
+            _register(cls, manifest)
+
+
+def _register_entrypoint_parsers() -> None:
+    """Register parsers advertised via the ``icarus.parsers`` entry-point group."""
+    try:
+        from importlib.metadata import entry_points
+
+        eps = list(entry_points(group="icarus.parsers"))
+    except Exception as exc:  # older metadata backends / none installed
+        log.debug("No entry-point parsers available: %s", exc)
+        return
+    for ep in eps:
+        try:
+            loaded = ep.load()
+        except Exception as exc:
+            log.warning("Skipping entry-point parser %s: %s", ep.name, exc)
+            continue
+        candidates = [loaded] if inspect.isclass(loaded) else list(_concrete_parsers(loaded))
+        for cls in candidates:
+            if inspect.isclass(cls) and issubclass(cls, BaseParser) and not inspect.isabstract(cls):
+                _register(cls, None)
+
+
+_register_directory_parsers()
+_register_entrypoint_parsers()
 
 
 def get_parser(name: str) -> BaseParser:

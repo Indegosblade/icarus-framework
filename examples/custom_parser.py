@@ -59,6 +59,12 @@ class SimpleParser(BaseParser):
         return {"linked": 0}
 
 
-# To register, add to icarus/parsers/__init__.py:
-#   from examples.custom_parser import SimpleParser
-#   PARSERS["simple"] = SimpleParser
+# Registration is automatic. Drop this module — plus an optional sibling
+# <module>.yaml manifest — into icarus/parsers/, or into the gitignored
+# icarus/parsers/private/ package for a local-only parser, and ICARUS discovers
+# and registers it at import time. No registry file to edit.
+#
+# A packaged parser can instead be exposed via an "icarus.parsers" entry point
+# in its own pyproject.toml, e.g.:
+#   [project.entry-points."icarus.parsers"]
+#   simple = "my_pkg.custom_parser:SimpleParser"
