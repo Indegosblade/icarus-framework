@@ -17,7 +17,7 @@ Structured data sources contain implicit relationships that are invisible at the
 |    +----v----+    +----v----+    +----v----+    +----v----+        |
 |    | PARSER  |    | SCHEMA  |    |  QUERY  |    |RESOLVER |        |
 |    |Registry |    | Manager |    | Engine  |    | Entity  |        |
-|    |8 parsers|    |         |    |         |    | Resolve |        |
+|    |11 total |    |         |    |         |    | Resolve |        |
 |    +----+----+    +----+----+    +----+----+    +----+----+        |
 |         |              |              |              |              |
 |         +------- ------+---------- ---+--------------+             |
@@ -75,7 +75,7 @@ Parsers use `os.walk(onerror=lambda e: None)` instead of `pathlib.rglob()`. This
 
 ### Parser Ecosystem
 
-The framework itself has no knowledge of platform-specific formats. Parsers provide that. Each parser ships with a YAML manifest (validated by JSON Schema), declares a quality tier and specificity level, and participates in a registry contest for auto-detection. Generic fallback parsers ensure every directory produces output.
+The framework itself has no knowledge of platform-specific formats. Parsers provide that. Each parser ships with a YAML manifest (validated by JSON Schema), declares a quality tier and specificity level, and participates in a registry contest for auto-detection. Generic fallback parsers ensure every directory produces output. The candidate `macos` parser targets iOS/macOS daemon attack-surface mapping, reading Mach-O entitlements with a self-contained stdlib reader — no external `codesign` or `ldid`.
 
 A test harness enforces 4 quality gates: golden output match, idempotency, schema conformance, and zero-PII verification.
 
@@ -129,20 +129,22 @@ Diffs export as STIX Note objects with addition/deletion classification.
 
 ---
 
-## Schema (v4)
+## Schema (v5)
 
-15 normalized tables. 3 FTS indexes. 3 intelligence views.
+16 normalized tables. 3 FTS indexes. 3 intelligence views.
 
 | Layer | Tables |
 |-------|--------|
-| Ontology | files, binaries, daemons, entitlements, sandbox_profiles, sandbox_rules, kexts, frameworks |
+| Ontology | files, binaries, daemons, mach_services, entitlements, sandbox_profiles, sandbox_rules, kexts, frameworks |
 | Infrastructure | metadata, versions |
 | Events | observations |
 | Resolution | atoms, bags, bag_atoms, resolution_event_log |
 | Search | files_fts, daemons_fts, atoms_fts |
 | Views | v_sandbox_escape_surface, v_kernel_attack_surface, v_test_binaries |
 
-Migration chain: v2 -> v3 -> v4. Applied automatically on database open.
+`mach_services` normalizes each launchd Mach service name to the daemon that vends it — the Mach-service -> daemon reachability pivot for attack-surface queries.
+
+Migration chain: v2 -> v3 -> v4 -> v5. Applied automatically on database open.
 
 ---
 

@@ -19,6 +19,30 @@
 
 ---
 
+## Candidate Parsers
+
+Under evaluation in `parsers-devel.json` — not yet gated for production.
+
+| Parser | Specificity | Reliability |
+|--------|:-----------:|:-----------:|
+| `macos` | 8 | B |
+| `network/privacy_stack` | 10 | B |
+| `network/deploy_scripts` | 15 | B |
+
+**`macos`** — macOS / iOS root filesystem: daemons, Mach services, entitlements, kexts, frameworks. Ingests an extracted rootfs for iOS/macOS daemon and attack-surface mapping (Apple Security Bounty research), in phases:
+
+1. **launchd** — LaunchDaemon/LaunchAgent plists become `daemons`; each `MachServices` key is normalized into a `mach_services` row (the service -> daemon reachability pivot).
+2. **Mach-O binaries** — architecture, code-signing flags, and embedded entitlements, extracted by a self-contained stdlib Mach-O reader at `icarus/parsers/macho.py` (no external `codesign` or `ldid`).
+3. **IOKit kexts**, **frameworks**, and the **sandbox-profile catalog**.
+
+`extract_relationships` links each daemon to its executable binary.
+
+**`network/privacy_stack`** — home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard, deploy scripts).
+
+**`network/deploy_scripts`** — Paramiko-based deploy/fix scripts for remote server management.
+
+---
+
 ## Parser Manifest
 
 Every parser ships with a YAML manifest validated by JSON Schema at load time. The manifest declares identity, capabilities, quality, and test configuration.
