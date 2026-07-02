@@ -1,5 +1,6 @@
 """Generic archive parser — catalogs .zip/.tar/.gz files and their contents."""
 
+import itertools
 import os
 import sqlite3
 import tarfile
@@ -84,14 +85,25 @@ class ArchiveParser(BaseParser):
         return {"linked": 0}
 
 
-def _list_archive(path: Path) -> list:
+def _list_archive(path: Path, limit: int = 50) -> list:
+    """List up to `limit` archive members without materializing all of them.
+
+    Iterates tar members lazily (TarFile.__iter__) so a bomb with millions of
+    entries is not fully scanned; the zip central directory is sliced instead
+    of copied.
+    """
     try:
         if path.suffix.lower() == ".zip":
             with zipfile.ZipFile(path) as zf:
-                return zf.namelist()[:50]
+                return list(itertools.islice(zf.namelist(), limit))
         elif path.suffix.lower() in (".tar", ".tgz") or path.name.lower().endswith(".tar.gz"):
+            names = []
             with tarfile.open(path) as tf:
-                return [m.name for m in tf.getmembers()[:50]]
-    except (zipfile.BadZipFile, tarfile.TarError, OSError):
+                for member in tf:  # lazy — does not scan the whole archive
+                    names.append(member.name)
+                    if len(names) >= limit:
+                        break
+            return names
+    except (zipfile.BadZipFile, tarfile.TarError, OSError, EOFError):
         pass
     return []

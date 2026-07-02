@@ -8,6 +8,10 @@ from typing import Any, Dict
 
 from icarus.parsers.base import BaseParser
 
+# CloudTrail exports can be very large; do not read a single file bigger than
+# this fully into memory.
+_MAX_JSON_BYTES = 200_000_000
+
 
 class CloudTrailParser(BaseParser):
     @property
@@ -52,17 +56,23 @@ class CloudTrailParser(BaseParser):
                         continue
                     path = Path(dirpath) / fname
                     try:
+                        st = path.stat()
+                    except OSError:
+                        continue
+                    if not 0 < st.st_size <= _MAX_JSON_BYTES:
+                        continue
+                    try:
                         data = json.loads(
                             path.read_text(errors="replace")
                         )
                     except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                         continue
 
-                    if not isinstance(data, dict) or "Records" not in data:
+                    records = data.get("Records") if isinstance(data, dict) else None
+                    if not isinstance(records, list):
                         continue
 
                     rel = self._rel_path(path, source)
-                    st = path.stat()
                     conn.execute(
                         "INSERT OR IGNORE INTO files "
                         "(path,filename,extension,size,sha256,"
@@ -73,73 +83,73 @@ class CloudTrailParser(BaseParser):
                     )
                     stats["files"] += 1
 
-                    for record in data["Records"]:
-                        if not isinstance(record, dict):
+                    for record in records:
+                        try:
+                            self._ingest_record(conn, record, rel, stats)
+                        except (sqlite3.Error, TypeError, ValueError):
+                            # One malformed record must not abort the build.
                             continue
-
-                        identity = record.get("userIdentity", {})
-                        arn = identity.get("arn", "")
-                        if not arn:
-                            continue
-
-                        conn.execute(
-                            "INSERT OR IGNORE INTO daemons "
-                            "(label,plist_path,program,user_name)"
-                            " VALUES (?,?,?,?)",
-                            (arn, rel,
-                             identity.get("type", ""),
-                             identity.get("accountId", "")),
-                        )
-                        stats["daemons"] += 1
-
-                        daemon_row = conn.execute(
-                            "SELECT id FROM daemons WHERE label=?",
-                            (arn,),
-                        ).fetchone()
-                        if not daemon_row:
-                            continue
-
-                        event_time = record.get("eventTime", "")
-                        event_name = record.get("eventName", "")
-                        event_source = record.get("eventSource", "")
-
-                        props = {}
-                        for key in ("sourceIPAddress", "awsRegion",
-                                    "errorCode", "errorMessage"):
-                            val = record.get(key)
-                            if val:
-                                props[key] = val
-                        req = record.get("requestParameters")
-                        if isinstance(req, dict):
-                            props["requestParameters"] = req
-                        resp = record.get("responseElements")
-                        if isinstance(resp, dict):
-                            props["responseElements"] = resp
-
-                        existing = conn.execute(
-                            "SELECT id FROM observations "
-                            "WHERE entity_table=? AND entity_id=? "
-                            "AND observed_at=? AND event_type=?",
-                            ("daemons", daemon_row[0],
-                             event_time, event_name),
-                        ).fetchone()
-                        if not existing:
-                            conn.execute(
-                                "INSERT INTO observations "
-                                "(entity_table,entity_id,observed_at,"
-                                "event_type,observer,properties,"
-                                "confidence) "
-                                "VALUES (?,?,?,?,?,?,?)",
-                                ("daemons", daemon_row[0], event_time,
-                                 event_name, event_source,
-                                 json.dumps(props) if props else None,
-                                 0.90),
-                            )
-                        stats["observations"] += 1
             conn.commit()
         finally:
             conn.close()
         return stats
+
+    def _ingest_record(self, conn, record, rel, stats) -> None:
+        """Ingest one CloudTrail record. May raise on malformed data — the
+        caller skips just that record rather than aborting the whole build."""
+        if not isinstance(record, dict):
+            return
+        identity = record.get("userIdentity") or {}
+        if not isinstance(identity, dict):
+            return
+        arn = identity.get("arn") or ""
+        if not arn:
+            return
+
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO daemons "
+            "(label,plist_path,program,user_name) VALUES (?,?,?,?)",
+            (arn, rel, identity.get("type", ""), identity.get("accountId", "")),
+        )
+        if cur.rowcount:
+            stats["daemons"] += 1
+
+        daemon_row = conn.execute(
+            "SELECT id FROM daemons WHERE label=?", (arn,)
+        ).fetchone()
+        if not daemon_row:
+            return
+
+        event_time = record.get("eventTime", "")
+        event_name = record.get("eventName", "")
+        event_source = record.get("eventSource", "")
+
+        props = {}
+        for key in ("sourceIPAddress", "awsRegion", "errorCode", "errorMessage"):
+            val = record.get(key)
+            if val:
+                props[key] = val
+        req = record.get("requestParameters")
+        if isinstance(req, dict):
+            props["requestParameters"] = req
+        resp = record.get("responseElements")
+        if isinstance(resp, dict):
+            props["responseElements"] = resp
+
+        existing = conn.execute(
+            "SELECT id FROM observations "
+            "WHERE entity_table=? AND entity_id=? AND observed_at=? AND event_type=?",
+            ("daemons", daemon_row[0], event_time, event_name),
+        ).fetchone()
+        if not existing:
+            conn.execute(
+                "INSERT INTO observations "
+                "(entity_table,entity_id,observed_at,event_type,observer,"
+                "properties,confidence) VALUES (?,?,?,?,?,?,?)",
+                ("daemons", daemon_row[0], event_time, event_name, event_source,
+                 json.dumps(props) if props else None, 0.90),
+            )
+            stats["observations"] += 1
 
     def extract_relationships(
         self, source: Path, db_path: Path

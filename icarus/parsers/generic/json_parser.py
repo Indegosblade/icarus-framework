@@ -8,6 +8,9 @@ from typing import Any, Dict
 
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
+# Do not read files larger than this fully into memory to parse keys.
+_MAX_JSON_BYTES = 50_000_000
+
 
 class JsonParser(BaseParser):
     @property
@@ -48,7 +51,10 @@ class JsonParser(BaseParser):
                         stats["files"] += 1
 
                         try:
-                            data = json.loads(path.read_text(errors="replace"))
+                            if 0 < st.st_size <= _MAX_JSON_BYTES:
+                                data = json.loads(path.read_text(errors="replace"))
+                            else:
+                                data = None
                             if isinstance(data, dict):
                                 keys = ", ".join(sorted(data.keys())[:20])
                                 file_row = conn.execute(
