@@ -74,6 +74,24 @@ def _ent_value(value: Any):
     return json.dumps(value, default=str), "other"
 
 
+def _text(value: Any) -> Optional[str]:
+    """Coerce a plist value to TEXT for a scalar column.
+
+    iOS launchd plists sometimes use feature-flag conditional dicts for keys
+    that are normally scalars, e.g.
+        UserName = {'#IfFeatureFlagDisabled': 'Security/SeparateUserKeychain',
+                    '#Then': '_securityd', '#Else': 'mobile'}
+    Preserve the conditional as JSON rather than crashing the SQLite bind.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(value, default=str)
+
+
 class MacosParser(BaseParser):
     """Parser for extracted macOS / iOS root filesystems."""
 
@@ -189,7 +207,7 @@ class MacosParser(BaseParser):
         conn.execute(
             "INSERT INTO binaries (file_id,bundle_id,executable_name,arch,code_sign_flags) "
             "VALUES (?,?,?,?,?)",
-            (file_id, bundle_id, path.name, info.get("arch"),
+            (file_id, _text(bundle_id), path.name, info.get("arch"),
              hex(flags) if isinstance(flags, int) else None),
         )
         stats["binaries"] += 1
@@ -226,7 +244,9 @@ class MacosParser(BaseParser):
                 pl = _load_plist(plist_path)
                 if not pl:
                     continue
-                label = pl.get("Label") or plist_path.stem
+                label = pl.get("Label")
+                if not isinstance(label, str) or not label:
+                    label = plist_path.stem  # keep label a clean string (lookup key)
                 prog_args = pl.get("ProgramArguments")
                 program = pl.get("Program")
                 if not program and isinstance(prog_args, list) and prog_args:
@@ -244,14 +264,14 @@ class MacosParser(BaseParser):
                     "run_at_load,keep_alive,sandbox_profile,mach_services,session_type) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        label, rel, program,
+                        label, rel, _text(program),
                         json.dumps(prog_args) if prog_args else None,
-                        pl.get("UserName"), pl.get("GroupName"),
+                        _text(pl.get("UserName")), _text(pl.get("GroupName")),
                         1 if pl.get("RunAtLoad") else 0,
                         1 if pl.get("KeepAlive") else 0,
-                        sandbox if isinstance(sandbox, str) else None,
+                        _text(sandbox),
                         json.dumps(mach) if mach else None,
-                        session if isinstance(session, str) else None,
+                        _text(session),
                     ),
                 )
                 row = conn.execute("SELECT id FROM daemons WHERE label=?", (label,)).fetchone()
@@ -307,8 +327,8 @@ class MacosParser(BaseParser):
                 "(bundle_id,name,version,dependencies,personalities,iokit_classes,has_user_client) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (
-                    bundle_id, info.get("CFBundleName") or kext.stem,
-                    info.get("CFBundleVersion"),
+                    _text(bundle_id), _text(info.get("CFBundleName")) or kext.stem,
+                    _text(info.get("CFBundleVersion")),
                     json.dumps(sorted(deps)) if deps else None,
                     json.dumps(sorted(personalities)) if personalities else None,
                     json.dumps(sorted(set(iokit_classes))) if iokit_classes else None,
@@ -330,8 +350,8 @@ class MacosParser(BaseParser):
                 conn.execute(
                     "INSERT OR IGNORE INTO frameworks (name,path,bundle_id,version,is_private) "
                     "VALUES (?,?,?,?,?)",
-                    (fw.stem, rel, info.get("CFBundleIdentifier"),
-                     info.get("CFBundleVersion"), is_private),
+                    (fw.stem, rel, _text(info.get("CFBundleIdentifier")),
+                     _text(info.get("CFBundleVersion")), is_private),
                 )
                 stats["frameworks"] += 1
 

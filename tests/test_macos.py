@@ -129,3 +129,55 @@ def test_macos_end_to_end_with_binary(tmp_path):
 
         # unsandboxed daemon exposing Mach services with entitlements
         assert q.escape_surface().count == 1
+
+
+def test_daemon_feature_flag_conditional_values(tmp_path):
+    """iOS 27 launchd plists use feature-flag conditional dicts for keys that
+    are normally scalars (UserName/GroupName/LimitLoadToSessionType). The parser
+    must store them as JSON text instead of crashing on the SQLite bind.
+
+    Regression for the iPhone16,1 27.0 (24A5370h) rootfs build, where
+    com.apple.securityd's UserName is a feature-flag conditional dict.
+    """
+    import json
+
+    from icarus.core.schema import initialize_database
+    from icarus.parsers.macos import MacosParser
+
+    root = tmp_path / "rootfs"
+    (root / "System/Library/CoreServices").mkdir(parents=True)
+    (root / "System/Library/LaunchDaemons").mkdir(parents=True)
+    with open(root / "System/Library/CoreServices/SystemVersion.plist", "wb") as f:
+        plistlib.dump({"ProductVersion": "27.0"}, f)
+    cond = {"#IfFeatureFlagDisabled": "Security/SeparateUserKeychain",
+            "#Then": "_securityd", "#Else": "mobile"}
+    with open(root / "System/Library/LaunchDaemons/com.apple.securityd.plist", "wb") as f:
+        plistlib.dump({
+            "Label": "com.apple.securityd",
+            "Program": "/usr/libexec/securityd",
+            "MachServices": {"com.apple.securityd": True},
+            "UserName": cond,
+            "GroupName": {"#IfFeatureFlagDisabled": "Security/SeparateUserKeychain",
+                          "#Then": "_securityd"},
+            "LimitLoadToSessionType": {"#IfFeatureFlagEnabled": "UserManagement/SystemSessionD1",
+                                       "#Then": "System"},
+        }, f)
+
+    db = tmp_path / "out.db"
+    initialize_database(db, {"source": str(root)})
+    p = MacosParser()
+    stats = p.extract_entities(root, db)   # must not raise
+    assert stats["daemons"] == 1
+
+    conn = sqlite3.connect(str(db))
+    try:
+        user_name, group_name, session = conn.execute(
+            "SELECT user_name, group_name, session_type FROM daemons "
+            "WHERE label='com.apple.securityd'"
+        ).fetchone()
+    finally:
+        conn.close()
+    # conditional dicts are preserved as JSON text, not silently dropped
+    assert json.loads(user_name) == cond
+    assert json.loads(group_name)["#Then"] == "_securityd"
+    assert json.loads(session)["#Then"] == "System"
