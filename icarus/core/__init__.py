@@ -5,6 +5,7 @@ import re
 VALID_TABLES = frozenset({
     "files", "binaries", "daemons", "entitlements",
     "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
+    "mach_services",
     "metadata", "versions",
     "observations", "atoms", "bags", "bag_atoms", "resolution_event_log",
 })

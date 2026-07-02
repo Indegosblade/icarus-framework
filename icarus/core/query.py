@@ -138,6 +138,44 @@ class IcarusQuery:
         result.query_name = "MachService Map"
         return result
 
+    def mach_service_owners(self, pattern: Optional[str] = None) -> QueryResult:
+        """Normalized Mach service -> owning daemon (the reachability pivot).
+
+        Resolves a service name to its daemon by join on the mach_services
+        table. Pass an optional SQL LIKE pattern to filter service names.
+        """
+        base = (
+            "SELECT m.service_name, d.label, d.user_name, d.sandbox_profile "
+            "FROM mach_services m JOIN daemons d ON m.daemon_id = d.id "
+        )
+        if pattern:
+            result = self.execute(
+                base + "WHERE m.service_name LIKE ? ORDER BY m.service_name",
+                (pattern,),
+            )
+        else:
+            result = self.execute(base + "ORDER BY m.service_name")
+        result.query_name = "Mach Service Owners"
+        return result
+
+    def daemons_with_entitlement(self, key_pattern: str) -> QueryResult:
+        """Daemons whose executable binary holds a matching entitlement key.
+
+        Joins daemons -> binaries -> entitlements (key LIKE). The core
+        attack-surface question: which reachable daemons hold a powerful
+        entitlement (e.g. an IOKit user-client class or a private TCC allow).
+        """
+        result = self.execute("""
+            SELECT d.label, e.key, e.value, d.sandbox_profile, d.user_name
+            FROM daemons d
+            JOIN binaries b ON d.binary_id = b.id
+            JOIN entitlements e ON e.binary_id = b.id
+            WHERE e.key LIKE ?
+            ORDER BY d.label, e.key
+        """, (key_pattern,))
+        result.query_name = f"Daemons with entitlement like {key_pattern!r}"
+        return result
+
     def kernel_surface(self) -> QueryResult:
         """Kernel extensions with user-reachable interfaces."""
         result = self.execute("SELECT * FROM v_kernel_attack_surface")

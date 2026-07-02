@@ -17,6 +17,7 @@ _ALL_PARSERS = [
     ("icarus.parsers.node_parser", "NodeParser", "node_parser.yaml"),
     ("icarus.parsers.windows", "WindowsParser", "windows.yaml"),
     ("icarus.parsers.linux", "LinuxParser", "linux.yaml"),
+    ("icarus.parsers.macos", "MacosParser", "macos.yaml"),
     ("icarus.parsers.cloud.aws.cloudtrail", "CloudTrailParser", "cloud/aws/cloudtrail.yaml"),
     ("icarus.parsers.generic.json_parser", "JsonParser", "generic/json_parser.yaml"),
     ("icarus.parsers.generic.xml_parser", "XmlParser", "generic/xml_parser.yaml"),
