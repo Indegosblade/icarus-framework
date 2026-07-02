@@ -17,7 +17,7 @@ _ALL_PARSERS = [
     ("icarus.parsers.node_parser", "NodeParser", "node_parser.yaml"),
     ("icarus.parsers.windows", "WindowsParser", "windows.yaml"),
     ("icarus.parsers.linux", "LinuxParser", "linux.yaml"),
-    ("icarus.parsers.cloud.cloudtrail", "CloudTrailParser", "cloud/cloudtrail.yaml"),
+    ("icarus.parsers.cloud.aws.cloudtrail", "CloudTrailParser", "cloud/aws/cloudtrail.yaml"),
     ("icarus.parsers.generic.json_parser", "JsonParser", "generic/json_parser.yaml"),
     ("icarus.parsers.generic.xml_parser", "XmlParser", "generic/xml_parser.yaml"),
     ("icarus.parsers.generic.sqlite_parser", "SqliteParser", "generic/sqlite_parser.yaml"),
@@ -26,6 +26,10 @@ _ALL_PARSERS = [
      "generic/binary_entropy_parser.yaml"),
     ("icarus.parsers.javascript_parser", "JavaScriptParser",
      "javascript_parser.yaml"),
+    ("icarus.parsers.network.privacy_stack", "PrivacyStackParser",
+     "network/privacy_stack.yaml"),
+    ("icarus.parsers.network.deploy_scripts", "DeployScriptsParser",
+     "network/deploy_scripts.yaml"),
 ]
 
 for _mod_path, _cls_name, _yaml_name in _ALL_PARSERS:
