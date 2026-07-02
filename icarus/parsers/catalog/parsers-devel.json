@@ -1,1 +1,51 @@
-[]
+[
+  {
+    "parser_id": "macos",
+    "version": "1.0.0",
+    "quality_tier": "candidate",
+    "description": "macOS / iOS root filesystem \u2014 daemons, Mach services, entitlements, kexts, frameworks",
+    "specificity_level": 8,
+    "reliability": "B",
+    "entity_types": [
+      "files",
+      "binaries",
+      "daemons",
+      "mach_services",
+      "entitlements",
+      "kexts",
+      "frameworks",
+      "sandbox_profiles"
+    ]
+  },
+  {
+    "parser_id": "network/deploy_scripts",
+    "version": "1.0.0",
+    "quality_tier": "candidate",
+    "description": "Paramiko-based deploy/fix scripts for remote server management",
+    "specificity_level": 15,
+    "reliability": "B",
+    "entity_types": [
+      "files",
+      "binaries",
+      "daemons",
+      "observations",
+      "entitlements"
+    ]
+  },
+  {
+    "parser_id": "network/privacy_stack",
+    "version": "1.0.0",
+    "quality_tier": "candidate",
+    "description": "Home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard, deploy scripts)",
+    "specificity_level": 10,
+    "reliability": "B",
+    "entity_types": [
+      "files",
+      "binaries",
+      "daemons",
+      "entitlements",
+      "observations",
+      "frameworks"
+    ]
+  }
+]

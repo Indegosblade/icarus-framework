@@ -16,7 +16,7 @@
     "parser_id": "generic/archive",
     "version": "1.0.0",
     "quality_tier": "production",
-    "description": "Generic archive directory \u00e2\u20ac\u201d catalogs .zip/.tar/.gz files and contents",
+    "description": "Generic archive directory \u2014 catalogs .zip/.tar/.gz files and contents",
     "specificity_level": 100,
     "reliability": "F",
     "entity_types": [
@@ -27,7 +27,7 @@
     "parser_id": "generic/binary",
     "version": "1.0.0",
     "quality_tier": "production",
-    "description": "Generic binary/unknown \u00e2\u20ac\u201d catalogs files by metadata (size, hash, extension)",
+    "description": "Generic binary/unknown \u2014 catalogs files by metadata (size, hash, extension)",
     "specificity_level": 100,
     "reliability": "F",
     "entity_types": [
@@ -38,7 +38,7 @@
     "parser_id": "generic/json",
     "version": "1.0.0",
     "quality_tier": "production",
-    "description": "Generic JSON file directory \u00e2\u20ac\u201d catalogs .json files and top-level keys",
+    "description": "Generic JSON file directory \u2014 catalogs .json files and top-level keys",
     "specificity_level": 100,
     "reliability": "F",
     "entity_types": [
@@ -49,7 +49,7 @@
     "parser_id": "generic/sqlite",
     "version": "1.0.0",
     "quality_tier": "production",
-    "description": "Generic SQLite database directory \u00e2\u20ac\u201d catalogs .db/.sqlite files and schemas",
+    "description": "Generic SQLite database directory \u2014 catalogs .db/.sqlite files and schemas",
     "specificity_level": 100,
     "reliability": "F",
     "entity_types": [
@@ -60,7 +60,7 @@
     "parser_id": "generic/xml",
     "version": "1.0.0",
     "quality_tier": "production",
-    "description": "Generic XML file directory \u00e2\u20ac\u201d catalogs .xml files",
+    "description": "Generic XML file directory \u2014 catalogs .xml files",
     "specificity_level": 100,
     "reliability": "F",
     "entity_types": [

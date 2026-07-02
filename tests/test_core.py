@@ -34,8 +34,8 @@ def test_imports():
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
     assert __version__ == "1.1.1"
-    assert SCHEMA_VERSION == 4
-    assert len(VALID_TABLES) == 15
+    assert SCHEMA_VERSION == 5
+    assert len(VALID_TABLES) == 16
     assert len(VALID_FTS_TABLES) == 3
     assert "windows" in list_parsers()
     assert "linux" in list_parsers()
@@ -45,7 +45,7 @@ def test_schema_init_and_fts(tmp_db):
     from icarus.core.schema import initialize_database
 
     stats = initialize_database(tmp_db, {"source": "test"})
-    assert stats["schema_version"] == 4
+    assert stats["schema_version"] == 5
     assert stats["tables"] > 8
 
     conn = sqlite3.connect(str(tmp_db))
@@ -215,6 +215,35 @@ def test_pipeline_checkpoint_resume():
         call_log.clear()
         p.run(resume=True)
         assert call_log == []
+
+
+def test_pipeline_populates_version_record(tmp_path):
+    """Regression: a fresh build must record a finalized version row.
+
+    Previously _create_version_record ran before the init phase created the
+    DB, so the versions table stayed empty and provenance was silently lost.
+    """
+    from icarus.core.pipeline import create_default_pipeline
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "test.exe").write_bytes(b"MZ" + b"\x00" * 200)
+    out = tmp_path / "out.db"
+    create_default_pipeline(
+        src, out, parser_name="windows", skip_hygeia=True
+    ).run(resume=False)
+
+    conn = sqlite3.connect(str(out))
+    try:
+        rows = conn.execute(
+            "SELECT parser_name, entity_count, completed_at FROM versions"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "windows"
+    assert rows[0][1] > 0
+    assert rows[0][2] is not None
 
 
 def test_no_personal_data():
@@ -965,5 +994,38 @@ def test_migration_v3_to_v4(tmp_db):
     row = conn.execute("SELECT confidence, marking FROM files WHERE path = '/bin/ls'").fetchone()
     assert row[0] == 1.0
     assert row[1] == "UNCLASSIFIED"
+
+    conn.close()
+
+
+def test_migration_v4_to_v5(tmp_db):
+    from icarus.core.schema import migrate_v4_to_v5
+
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS daemons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL UNIQUE,
+            plist_path TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS versions (id INTEGER PRIMARY KEY AUTOINCREMENT);
+        INSERT INTO metadata VALUES ('schema_version', '4');
+    """)
+    conn.commit()
+
+    migrate_v4_to_v5(conn)
+
+    version = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "5"
+
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    assert "mach_services" in tables
+
+    cols = {c[1] for c in conn.execute("PRAGMA table_info(mach_services)")}
+    assert {"daemon_id", "service_name"} <= cols
 
     conn.close()

@@ -11,7 +11,7 @@ PARSERS_DIR = Path(__file__).parent.parent / "icarus" / "parsers"
 
 
 def _run_cloudtrail():
-    from icarus.parsers.cloud.cloudtrail import CloudTrailParser
+    from icarus.parsers.cloud.aws.cloudtrail import CloudTrailParser
     db_path = Path(tempfile.mktemp(suffix=".db"))
     initialize_database(db_path, {"source": "test"})
     CloudTrailParser().extract_entities(FIXTURES_DIR, db_path)
@@ -19,7 +19,7 @@ def _run_cloudtrail():
 
 
 def test_cloudtrail_identifies():
-    from icarus.parsers.cloud.cloudtrail import CloudTrailParser
+    from icarus.parsers.cloud.aws.cloudtrail import CloudTrailParser
     assert CloudTrailParser().identify(FIXTURES_DIR)
     with tempfile.TemporaryDirectory() as empty:
         assert not CloudTrailParser().identify(Path(empty))
@@ -78,7 +78,7 @@ def test_cloudtrail_zero_pii():
 
 
 def test_cloudtrail_idempotency():
-    from icarus.parsers.cloud.cloudtrail import CloudTrailParser
+    from icarus.parsers.cloud.aws.cloudtrail import CloudTrailParser
     db = _run_cloudtrail()
     try:
         conn = sqlite3.connect(str(db))
@@ -96,11 +96,11 @@ def test_cloudtrail_idempotency():
 
 
 def test_cloudtrail_harness_all_pass():
-    from icarus.parsers.cloud.cloudtrail import CloudTrailParser
+    from icarus.parsers.cloud.aws.cloudtrail import CloudTrailParser
     from icarus.parsers.manifest import load_manifest
     from icarus.parsers.testing import ParserTestHarness
 
-    manifest = load_manifest(PARSERS_DIR / "cloud" / "cloudtrail.yaml")
+    manifest = load_manifest(PARSERS_DIR / "cloud" / "aws" / "cloudtrail.yaml")
     harness = ParserTestHarness(CloudTrailParser(), manifest, FIXTURES_DIR)
     results = harness.run_all()
     for r in results:

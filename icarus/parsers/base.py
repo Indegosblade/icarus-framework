@@ -112,10 +112,16 @@ class BaseParser(ABC):
 
     @staticmethod
     def _safe_hash(path: Path, size: int) -> Optional[str]:
-        """SHA-256 of file contents, or None if >50MB or inaccessible."""
+        """SHA-256 of file contents, or None if >50MB, a symlink, or inaccessible.
+
+        Symlinks are never dereferenced: hashing a link would read its target,
+        which may resolve to a file outside the source tree.
+        """
         if size >= MAX_HASH_FILE_SIZE:
             return None
         try:
+            if path.is_symlink():
+                return None
             return hashlib.sha256(path.read_bytes()).hexdigest()
         except (PermissionError, OSError):
             return None

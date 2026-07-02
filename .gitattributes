@@ -1,0 +1,18 @@
+# Normalize all text files to LF in the repository and on checkout,
+# so the repo is stable regardless of Windows/WSL/macOS/Linux editors.
+* text=auto eol=lf
+
+# Treat these as binary — never normalize or diff as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.svg  text eol=lf
+*.pdf  binary
+*.db   binary
+*.sqlite binary
+*.sqlite3 binary
+*.ipsw binary
+*.dmg  binary
+*.img  binary
+*.wim  binary
