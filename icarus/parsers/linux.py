@@ -6,12 +6,13 @@ parses systemd units, and inventories shared libraries.
 """
 
 import os
+import re
 import sqlite3
 import struct
 from pathlib import Path
 from typing import Any, Dict
 
-from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser, link_daemons_to_binaries
 
 ELF_MAGIC = b"\x7fELF"
 ELF_ARCH = {0x03: "x86", 0x3E: "x86_64", 0xB7: "aarch64", 0x28: "arm", 0xF3: "riscv"}
@@ -88,7 +89,7 @@ class LinuxParser(BaseParser):
                             conn.execute(
                                 "INSERT OR IGNORE INTO daemons "
                                 "(label,plist_path,program) VALUES (?,?,?)",
-                                (path.stem, f"{rel_dir}/{fname}", ""),
+                                (path.stem, f"{rel_dir}/{fname}", _parse_execstart(path)),
                             )
                             stats["daemons"] += 1
 
@@ -109,12 +110,38 @@ class LinuxParser(BaseParser):
         return stats
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        return {"linked": 0}
+        conn = sqlite3.connect(str(db_path))
+        try:
+            linked = link_daemons_to_binaries(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        return {"linked": linked}
 
 
 def _match_dir(rel_dir: str, dir_set: frozenset) -> bool:
     """Check if rel_dir is or is under any directory in dir_set."""
     return any(rel_dir == d or rel_dir.startswith(d + "/") for d in dir_set)
+
+
+_EXECSTART_RE = re.compile(r"^\s*ExecStart\s*=\s*(.+)$", re.MULTILINE)
+
+
+def _parse_execstart(path: Path) -> str:
+    """Executable path from a systemd unit's ExecStart= directive, or "" if
+    absent/unreadable. systemd allows leading modifier chars (-, @, +, !, :) on
+    the command; the executable is the first whitespace-delimited token."""
+    try:
+        if path.stat().st_size > 1_000_000:
+            return ""
+        text = path.read_text(errors="ignore")
+    except OSError:
+        return ""
+    m = _EXECSTART_RE.search(text)
+    if not m:
+        return ""
+    cmd = m.group(1).strip().lstrip("-@+!:").strip()
+    return cmd.split()[0] if cmd else ""
 
 
 def _detect_elf_arch(path: Path) -> str:

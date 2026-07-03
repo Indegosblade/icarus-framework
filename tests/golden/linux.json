@@ -7,6 +7,6 @@
     "daemons": 1,
     "frameworks": 0
   },
-  "has_relationships": false,
+  "has_relationships": true,
   "zero_pii": true
 }
