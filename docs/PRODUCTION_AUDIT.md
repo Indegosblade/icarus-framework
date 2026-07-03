@@ -122,6 +122,7 @@ Severity is the verifier's adjusted severity. `line` numbers reference the audit
 - **Where:** `icarus/core/resolver.py:210`  ·  _api-design_
 - **Problem:** resolve(entity_type, blocking_keys, threshold=0.8) accepts a threshold parameter that is never referenced in the body (resolver.py:210-246). Its docstring (line 213) claims 'Run full resolution: block -> score -> cluster -> merge', but the implementation does naive exact-key grouping — lowercase/st…
 - **Fix:** Make resolve() actually use BlockingIndex.candidates_for for candidate generation and apply threshold as a score cutoff before create_bag/merge_bags; or, if exact blocking is the intended MVP, drop the threshold parameter and the BlockingIndex class from the …
+- **Update (resolver-wiring increment):** the deferred "real" pipeline now exists — `EntityResolver.resolve_scored()` runs the actual block -> score -> cluster -> merge over atoms fed by `icarus.core.atomize`, every candidate is auditable via `match_candidates`/`bags.score`, and it is wired to users via `icarus resolve` (and optionally `icarus build --resolve`).
 
 ### ✅ fixed — No curated public API surface; examples document a registration recipe that does not exist
 - **Where:** `icarus/__init__.py:3`  ·  _api-design_

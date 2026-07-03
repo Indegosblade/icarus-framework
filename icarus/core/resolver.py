@@ -1,16 +1,22 @@
 """
 ICARUS Entity Resolver — Atom/Bag/EventLog pattern for cross-source identity.
 
-EXPERIMENTAL / UNWIRED: this subsystem is fully built but is intentionally NOT
-part of ``create_default_pipeline`` — no ``resolve`` phase runs during a normal
-``icarus build``. It is exposed only as an explicitly-experimental entry point:
-construct ``EntityResolver(db_path, experimental=True)`` to acknowledge that the
-API and resolution behavior are unstable and may change.
+EXPERIMENTAL: the API and resolution behavior are still unstable and may
+change. The subsystem IS wired to users: the ``icarus resolve`` CLI command
+atomizes one or more source databases and resolves them into a shared output,
+and ``icarus build --resolve`` optionally runs an in-build resolve phase (see
+``icarus.core.pipeline.create_default_pipeline``). Direct use still requires
+acknowledging the experimental flag: construct
+``EntityResolver(db_path, experimental=True)``.
 
 Entities from different sources may refer to the same real-world thing under
 different identifiers. The resolver tracks immutable atoms (raw observations),
 groups them into bags (resolved entities), and logs every resolution decision
-in an append-only event log. Blocking is exact-key only (see ``resolve``).
+in an append-only event log. Two resolution entry points are offered:
+``resolve``, an exact-key-blocking MVP (identical normalized values or
+nothing), and ``resolve_scored``, the full block -> score -> cluster -> merge
+pipeline over atoms fed by ``icarus.core.atomize`` (see each method's own
+docstring for details).
 """
 
 import json
