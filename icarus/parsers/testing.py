@@ -55,7 +55,7 @@ class ParserTestHarness:
                 actual_counts = {}
                 for table in golden.get("entity_counts", {}):
                     try:
-                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # nosec B608 - table keys come from the in-repo tests/golden/*.json fixture, not external input
                         actual_counts[table] = count
                     except sqlite3.OperationalError:
                         actual_counts[table] = 0
@@ -142,7 +142,7 @@ class ParserTestHarness:
             col_list = ", ".join(cols)
             try:
                 rows = conn.execute(
-                    f"SELECT {col_list} FROM {table} ORDER BY {col_list}"
+                    f"SELECT {col_list} FROM {table} ORDER BY {col_list}"  # nosec B608 - table/col_list sourced from golden-fixture keys and this table's own PRAGMA table_info(), not external input
                 ).fetchall()
             except sqlite3.OperationalError:
                 continue
@@ -173,7 +173,7 @@ class ParserTestHarness:
                     if table in skip or table.endswith("_fts") or "_fts_" in table:
                         continue
                     if table not in declared:
-                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # nosec B608 - table read directly from sqlite_master of the harness's own temp DB above
                         if count > 0:
                             violations.append(f"{table} has {count} rows but not in produces")
 
@@ -212,7 +212,7 @@ class ParserTestHarness:
                 for table in self.manifest.entity_types:
                     try:
                         counts_first[table] = conn.execute(
-                            f"SELECT COUNT(*) FROM {table}"
+                            f"SELECT COUNT(*) FROM {table}"  # nosec B608 - table iterates manifest.entity_types, a dev-authored in-repo YAML field, not external input
                         ).fetchone()[0]
                     except sqlite3.OperationalError:
                         counts_first[table] = 0
@@ -227,7 +227,7 @@ class ParserTestHarness:
                 for table in self.manifest.entity_types:
                     try:
                         counts_second[table] = conn.execute(
-                            f"SELECT COUNT(*) FROM {table}"
+                            f"SELECT COUNT(*) FROM {table}"  # nosec B608 - table iterates manifest.entity_types, a dev-authored in-repo YAML field, not external input
                         ).fetchone()[0]
                     except sqlite3.OperationalError:
                         counts_second[table] = 0

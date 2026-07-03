@@ -240,7 +240,7 @@ class IcarusQuery:
         if ontology_table not in VALID_TABLES:
             raise ValueError(f"Invalid table: {ontology_table!r}")
         sql = (
-            f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
+            f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "  # nosec B608 - ontology_table checked against VALID_TABLES allowlist above; only bound ? params follow
             f"FROM [{ontology_table}] o "
             f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
         )
@@ -278,7 +278,7 @@ class IcarusQuery:
         counts = {}
         for table in sorted(VALID_TABLES - {"metadata", "versions"}):
             try:
-                row = self.conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()
+                row = self.conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()  # nosec B608 - table drawn from the VALID_TABLES allowlist itself (loop var), not external input
                 counts[table] = row[0]
             except sqlite3.OperationalError:
                 counts[table] = 0

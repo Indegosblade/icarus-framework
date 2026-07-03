@@ -59,7 +59,7 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
             quoted_table = _quote_ident(table)
             select_list = ", ".join(_quote_ident(c) for c in columns)
             cursor = conn.execute(
-                f"SELECT rowid, {select_list} FROM {quoted_table}"
+                f"SELECT rowid, {select_list} FROM {quoted_table}"  # nosec B608 - quoted_table/select_list are identifiers escaped via _quote_ident(); table pre-validated against VALID_TABLES in _get_text_columns()
             )
 
             for row in cursor:
@@ -76,12 +76,12 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
                         quoted_col = _quote_ident(col)
                         try:
                             conn.execute(
-                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",
+                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",  # nosec B608 - quoted_table/quoted_col escaped via _quote_ident(); values passed as bound ? params
                                 (cleaned, rowid)
                             )
                         except sqlite3.IntegrityError:
                             conn.execute(
-                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",
+                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",  # nosec B608 - quoted_table/quoted_col escaped via _quote_ident(); values passed as bound ? params
                                 (f"{cleaned}_{rowid}", rowid)
                             )
                         stats["redacted"] += 1
@@ -123,7 +123,7 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
             quoted_table = _quote_ident(table)
             select_list = ", ".join(_quote_ident(c) for c in columns)
             cursor = conn.execute(
-                f"SELECT rowid, {select_list} FROM {quoted_table}"
+                f"SELECT rowid, {select_list} FROM {quoted_table}"  # nosec B608 - quoted_table/select_list are identifiers escaped via _quote_ident(); table pre-validated against VALID_TABLES in _get_text_columns()
             )
 
             for row in cursor:

@@ -473,7 +473,7 @@ class DeployScriptsParser(BaseParser):
             for table in ("files", "daemons", "observations", "entitlements"):
                 try:
                     count = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
+                        f"SELECT COUNT(*) FROM {table}"  # nosec B608 - table iterates the hardcoded tuple literal above, not external input
                     ).fetchone()[0]
                     stats[table] = count
                 except sqlite3.OperationalError:
