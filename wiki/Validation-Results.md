@@ -2,6 +2,21 @@
 
 Test run data from actual pipeline executions against real directories and firmware images.
 
+## v1.4.0 — Cross-source entity resolution
+
+First end-to-end run of the scored resolver (`resolve_scored`) on real data. A real Linux dump (40 `/usr/bin` ELF binaries, 25 systemd units, real `/etc/passwd`) was built with the `linux` parser, then atomized as two separate sources and resolved across them.
+
+| Metric | Value |
+|--------|------:|
+| Atoms ingested (2 sources) | 104 |
+| Entity types resolved | binaries, daemons |
+| Canonical entities (`bags`) | 52 |
+| &nbsp;&nbsp;— spanning ≥ 2 sources | 52 (100%) |
+| Scored candidate pairs (`match_candidates`) | 424 |
+| Confidence-bearing resolve events | 52 |
+
+Every binary and daemon observed under both source versions merged into one canonical `bags` row carrying a `score`; every scored pair — above *or* below threshold — is retained in `match_candidates`, so each merge is auditable after the fact. The exact-key `resolve()` MVP and all pre-existing resolver behavior are unchanged.
+
 ## v1.2.0 — iOS 27.0 daemon attack-surface map
 
 First end-to-end run of the `macos` parser against a real Apple firmware image.

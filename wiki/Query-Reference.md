@@ -123,6 +123,23 @@ SELECT file_type, COUNT(*) as cnt FROM files GROUP BY file_type ORDER BY cnt DES
 SELECT label, program, user_name FROM daemons WHERE sandbox_profile IS NULL AND user_name = 'root'
 ```
 
+**Canonical entities spanning multiple sources (after `icarus resolve`):**
+```sql
+SELECT b.id, b.entity_type, b.canonical_key, b.score
+FROM bags b
+WHERE b.id IN (
+  SELECT bag_id FROM bag_atoms ba JOIN atoms a ON a.id = ba.atom_id
+  GROUP BY bag_id HAVING COUNT(DISTINCT a.source_version_id) >= 2
+)
+ORDER BY b.score DESC
+```
+
+**Why two atoms merged (audit the score and per-field features):**
+```sql
+SELECT entity_type, atom_a, atom_b, score, features
+FROM match_candidates ORDER BY score DESC LIMIT 20
+```
+
 **Cross-version additions:**
 ```python
 with IcarusDiffer("v1.db", "v2.db") as d:

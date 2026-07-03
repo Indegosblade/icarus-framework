@@ -79,6 +79,20 @@ icarus diff v1.db v2.db -o report.md
 icarus diff v1.db v2.db --stix changes.json
 ```
 
+## Resolve (experimental)
+
+Merge the same entity observed across multiple builds into one canonical identity:
+
+```bash
+# Atomize two builds and resolve binaries/daemons across them
+icarus resolve --out resolved.db host_a.db host_b.db
+
+# Or resolve within a single build
+icarus build --source /data --output intel.db --resolve
+```
+
+Every scored candidate pair is recorded in `match_candidates` and each merge's confidence in `bags.score`, so a resolution stays auditable. See [[CLI Reference]] for flags and [[Schema Reference]] for the tables.
+
 ## Parser Management
 
 ```bash
