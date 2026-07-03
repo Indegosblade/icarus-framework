@@ -72,7 +72,7 @@ def test_public_api_builds_a_working_pipeline_end_to_end(tmp_path):
 
     # initialize_database is idempotent/safe to call again on the same file.
     result = icarus.initialize_database(out)
-    assert result["schema_version"] == 5
+    assert result["schema_version"] == 6
 
     conn = sqlite3.connect(str(out))
     try:

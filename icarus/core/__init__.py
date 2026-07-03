@@ -8,6 +8,7 @@ VALID_TABLES = frozenset({
     "mach_services",
     "metadata", "versions",
     "observations", "atoms", "bags", "bag_atoms", "resolution_event_log",
+    "match_candidates",
 })
 
 VALID_FTS_TABLES = frozenset({"files", "daemons", "atoms"})
