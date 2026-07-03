@@ -1,6 +1,6 @@
 # Schema Reference
 
-ICARUS uses SQLite with schema version 5. 16 normalized tables, 3 FTS5 indexes, 3 intelligence views.
+ICARUS uses SQLite with schema version 6. 17 normalized tables, 3 FTS5 indexes, 3 intelligence views.
 
 ## Entity Tables
 
@@ -91,7 +91,7 @@ Key-value store for database metadata.
 | key | TEXT | Primary key |
 | value | TEXT | |
 
-Always contains: `schema_version` (currently "5"), `source` (source path).
+Always contains: `schema_version` (currently "6"), `source` (source path).
 
 ### versions
 
@@ -134,13 +134,39 @@ Immutable observations from each source. Never modified after creation.
 
 Resolved entity groups. Atoms that represent the same real-world thing.
 
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INTEGER | Primary key |
+| entity_type | TEXT | Entity type of the grouped atoms |
+| canonical_key | TEXT | Cluster key (`resolve`) or the smallest-id member's `source_key` (`resolve_scored`); NULL for a singleton from `create_bag` with no key given |
+| created_at | TEXT | ISO 8601 timestamp |
+| resolved_at | TEXT | Set when the bag is merged or split |
+| atom_count | INTEGER | Number of atoms currently in this bag |
+| score | REAL | Added in v6. Mean of the in-cluster match-edge scores for a `resolve_scored` merge; NULL for singletons and for bags produced by the exact-key `resolve` |
+
 ### bag_atoms
 
 Junction table: atom-to-bag membership.
 
 ### resolution_event_log
 
-Append-only audit trail of every resolution decision (create, merge, split).
+Append-only audit trail of every resolution decision (create, merge, split, resolve).
+
+### match_candidates
+
+Added in v6. Every atom pair scored during `resolve_scored`, whether or not it cleared the merge threshold — the audit trail behind a resolution decision.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | INTEGER | Primary key |
+| entity_type | TEXT | Entity type of the two atoms |
+| atom_a | INTEGER | FK to atoms — lower id of the pair |
+| atom_b | INTEGER | FK to atoms — higher id of the pair |
+| score | REAL | Weighted similarity in `[0, 1]` from `score_pair` |
+| features | TEXT | JSON per-field comparator scores (explainability) |
+| created_at | TEXT | ISO 8601 timestamp |
+
+`UNIQUE(atom_a, atom_b)`. A row exists here regardless of whether the pair cleared `--threshold` — only pairs at or above threshold become a merge, recorded in `bags`/`resolution_event_log`.
 
 ## FTS5 Indexes
 
@@ -162,4 +188,4 @@ Auto-synced via INSERT/DELETE triggers.
 
 ## Migration Chain
 
-v2 -> v3 -> v4 -> v5. Applied automatically when opening an older database.
+v2 -> v3 -> v4 -> v5 -> v6. Applied automatically when opening an older database.
