@@ -34,8 +34,8 @@ def test_imports():
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
     assert __version__ == "1.3.0"
-    assert SCHEMA_VERSION == 5
-    assert len(VALID_TABLES) == 16
+    assert SCHEMA_VERSION == 6
+    assert len(VALID_TABLES) == 17
     assert len(VALID_FTS_TABLES) == 3
     assert "windows" in list_parsers()
     assert "linux" in list_parsers()
@@ -45,7 +45,7 @@ def test_schema_init_and_fts(tmp_db):
     from icarus.core.schema import initialize_database
 
     stats = initialize_database(tmp_db, {"source": "test"})
-    assert stats["schema_version"] == 5
+    assert stats["schema_version"] == 6
     assert stats["tables"] > 8
 
     conn = sqlite3.connect(str(tmp_db))
@@ -1418,7 +1418,7 @@ def test_initialize_database_migration_path_leaves_fk_enforceable(tmp_db):
     conn.close()
 
     stats = initialize_database(tmp_db)
-    assert stats["schema_version"] == 5
+    assert stats["schema_version"] == 6
 
     conn = open_db(tmp_db)
     with pytest.raises(sqlite3.IntegrityError):

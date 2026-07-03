@@ -168,7 +168,8 @@ class ParserTestHarness:
                     ).fetchall()
                 ]
                 skip = {"metadata", "versions", "observations", "atoms", "bags",
-                        "bag_atoms", "resolution_event_log", "sqlite_sequence"}
+                        "bag_atoms", "resolution_event_log", "match_candidates",
+                        "sqlite_sequence"}
                 for table in all_tables:
                     if table in skip or table.endswith("_fts") or "_fts_" in table:
                         continue
