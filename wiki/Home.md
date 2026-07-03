@@ -1,6 +1,6 @@
 # ICARUS Wiki
 
-ICARUS extracts entities from structured data sources, maps their relationships into a queryable SQLite database, diffs across versions, and sanitizes the output. Parsers span Windows, Linux, cloud audit logs, and iOS/macOS root filesystems — the last maps the launchd daemon, Mach-service, and entitlement attack surface (validated on a real iOS 27.0 IPSW).
+ICARUS extracts entities from structured data sources, maps their relationships into a queryable SQLite database, diffs across versions, resolves entities across sources into canonical identities, and sanitizes the output. Parsers span Windows, Linux, cloud audit logs, and iOS/macOS root filesystems — the last maps the launchd daemon, Mach-service, and entitlement attack surface (validated on a real iOS 27.0 IPSW).
 
 ## Pages
 

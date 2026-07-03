@@ -152,13 +152,14 @@ with IcarusDiffer("v1.db", "v2.db") as d:
     diff = d.full_diff()          # All categories: add/delete/change/structural
     report = d.generate_report()  # Markdown
 
-# Resolve entities across sources
-with EntityResolver("intel.db") as r:
-    r.ingest_atom(version_id=1, entity_type="daemon",
-                  source_key="config", properties={"name": "nginx", "port": 80})
-    r.ingest_atom(version_id=2, entity_type="daemon",
-                  source_key="binary", properties={"name": "nginx", "path": "/usr/sbin/nginx"})
-    r.resolve("daemon", blocking_keys=["name"])
+# Resolve entities across sources (experimental — opt in with experimental=True)
+with EntityResolver("intel.db", experimental=True) as r:
+    r.ingest_atom(version_id=1, entity_type="binaries",
+                  source_key="nginx", properties={"executable_name": "nginx", "sha256": "ab12…"})
+    r.ingest_atom(version_id=2, entity_type="binaries",
+                  source_key="nginx", properties={"executable_name": "nginx", "sha256": "ab12…"})
+    r.resolve_scored("binaries")                        # block -> score -> cluster -> merge
+    # r.resolve("binaries", blocking_keys=["executable_name"])  # exact-key MVP
 
 # Export to STIX 2.1
 export_to_stix(Path("intel.db"), Path("bundle.json"))
@@ -208,18 +209,20 @@ See [about/PARSERS.md](about/PARSERS.md) for the parser development guide.
 
 ## Schema
 
-16 normalized tables, 3 FTS5 full-text indexes, 3 intelligence views. Schema version 5 with automatic migration from v2, v3, and v4.
+17 normalized tables, 3 FTS5 full-text indexes, 3 intelligence views. Schema version 6 with automatic migration from v2 through v5.
 
 | Layer | Tables |
 |-------|--------|
 | Ontology | `files`, `binaries`, `daemons`, `mach_services`, `entitlements`, `sandbox_profiles`, `sandbox_rules`, `kexts`, `frameworks` |
 | Infrastructure | `metadata`, `versions` |
 | Events | `observations` |
-| Resolution | `atoms`, `bags`, `bag_atoms`, `resolution_event_log` |
+| Resolution | `atoms`, `bags`, `bag_atoms`, `match_candidates`, `resolution_event_log` |
 | Search | `files_fts`, `daemons_fts`, `atoms_fts` |
 | Views | `v_sandbox_escape_surface`, `v_kernel_attack_surface`, `v_test_binaries` |
 
 `mach_services` (added in v5) normalizes each launchd job's advertised Mach services into rows — the reachability pivot from a Mach service name to the daemon that vends it, and the join behind `v_sandbox_escape_surface`.
+
+`match_candidates` and `bags.score` (added in v6) make entity resolution auditable: every scored atom pair the resolver considered is stored with its similarity score and per-field features, and each merged bag carries the confidence that produced it.
 
 Every entity row carries cell-level provenance: `source_version_id` (FK to pipeline run), `confidence` (0.0-1.0), `observed_time` (ISO 8601), and `marking` (UNCLASSIFIED / PII / SENSITIVE / REDACTED).
 
@@ -235,7 +238,7 @@ See [wiki/Schema-Reference](wiki/Schema-Reference.md) for full column definition
 
 **Two-graph model** — a single database holds an ontology graph (entities and relationships, structural) and an event graph (observations and resolution decisions, temporal). Cross-graph joins connect them.
 
-**Entity resolution** — the Atom/Bag/EventLog pattern groups observations from different sources that refer to the same real-world entity. Atoms are immutable. Bags merge and split with full reversibility. An append-only event log records every resolution decision. FTS5 blocking index generates candidate pairs without O(n^2) comparison.
+**Entity resolution** — the Atom/Bag/EventLog pattern groups observations from different sources that refer to the same real-world entity. Parsed entities are projected into immutable `atoms`, then `resolve_scored` runs a real **block → score → cluster → merge** pipeline: FTS5 + blocking-key candidate generation (no O(n^2) comparison), stdlib per-field similarity scoring, union-find clustering of the above-threshold pairs, and a merge into canonical `bags`. Every scored pair is persisted to `match_candidates` and every merge's confidence to `bags.score`, so a decision is auditable after the fact; an append-only event log records each one, and bags merge/split with full reversibility. The simpler exact-key `resolve()` remains as an MVP. The subsystem is experimental — opt in via `icarus resolve` (cross-source) or `icarus build --resolve` (within a build).
 
 **Diff categories** — ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE. The differ opens both databases immutable and read-only (`mode=ro&immutable=1` — no `-wal`/`-shm`, safe on untrusted exports) and runs set-difference queries directly in SQLite. Property comparisons are NULL-safe (`IS NOT`, so a change to/from NULL is never missed) and entity identity is diffed on natural keys (e.g. bundle ID + entitlement key/value), not autoincrement IDs that carry no meaning across databases.
 
@@ -257,7 +260,7 @@ See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and exte
 pytest tests/ -x -q
 ```
 
-163 tests across 13 modules covering schema, queries, diffing, pipeline, entity resolution, observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
+208 tests across 16 modules covering schema, queries, diffing, pipeline, entity resolution (the atomizer, similarity scoring/blocking, scored resolution, and CLI/pipeline wiring), observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
 
 CI runs the full test matrix on every push:
 
@@ -330,10 +333,12 @@ icarus-framework/
 │   ├── __main__.py               CLI entry point
 │   ├── core/
 │   │   ├── pipeline.py           Phase orchestrator with checkpoint/resume
-│   │   ├── schema.py             SQLite schema v5, FTS5, migrations
+│   │   ├── schema.py             SQLite schema v6, FTS5, migrations
 │   │   ├── query.py              Query engine with 3 intelligence views
 │   │   ├── differ.py             Cross-version diff engine
-│   │   ├── resolver.py           Entity resolution (Atom/Bag/EventLog)
+│   │   ├── atomize.py            Project parser rows into resolver atoms
+│   │   ├── matching.py           Blocking, similarity scoring, clustering
+│   │   ├── resolver.py           Entity resolution (Atom/Bag/EventLog, scored)
 │   │   └── registry.py           Parser registry and detection contest
 │   ├── parsers/
 │   │   ├── base.py               Abstract parser interface
@@ -351,7 +356,7 @@ icarus-framework/
 │   └── integrations/
 │       ├── hygeia.py             PII sanitization
 │       └── stix_export.py        STIX 2.1 export
-├── tests/                        163 tests
+├── tests/                        208 tests
 ├── examples/                     Custom parser template
 ├── schema/                       Standalone SQL reference
 ├── about/                        Architecture and parser docs
@@ -381,6 +386,17 @@ icarus-framework/
 ---
 
 ## Changelog
+
+### v1.4.0 (2026-07-03) — Real entity resolution (block → score → cluster → merge)
+
+The resolver's long-standing "block → score → cluster → merge" promise is now real, cross-source, and auditable — and it is finally fed by the pipeline instead of being created empty on every build. Delivered as four reviewed increments.
+
+- **Atomizer** — a new `icarus/core/atomize.py` projects parsed entity rows (binaries, daemons) into the immutable `atoms` table through a declarative, extensible projection registry. Before this, nothing populated `atoms` outside tests, so the entire resolver subsystem was built and left empty.
+- **Scoring + blocking** — `icarus/core/matching.py` adds stdlib (`difflib`) per-field comparators, a weighted `score_pair` that returns a similarity plus its per-field features, and `candidate_pairs`, which generates candidates from normalized blocking-key buckets unioned with an FTS5 token search over `atoms_fts` (the index that was maintained but never used) — no O(n²) all-pairs comparison.
+- **Scored resolution** — `EntityResolver.resolve_scored()` runs the full pipeline: block → score (persisting *every* candidate to `match_candidates`) → union-find `cluster()` of the above-threshold pairs → merge each connected component into one canonical `bags` row with a confidence in `bags.score` and a confidence-bearing event-log entry. The exact-key `resolve()` MVP is untouched; `threshold` lives only on the new method.
+- **Schema v6** — new `match_candidates` table (audited scored atom pairs) and `bags.score` column, added to fresh databases and to existing ones through a `_v5_to_v6` migration with byte-identical DDL on both paths. 17 tables total.
+- **Both surfaces** — `icarus resolve --out resolved.db a.db b.db …` atomizes and resolves across multiple builds (cross-source canonical identity — "the same binary across two dumps"), and an optional `icarus build --resolve` phase resolves within a single build. Both are explicitly experimental.
+- **Quality** — 208 tests (up from 163), ruff + mypy + bandit clean, 12-job CI matrix green. Validated end-to-end on a real Linux dump: two ingests merged into 52 canonical entities each spanning both sources, every merge scored and recorded.
 
 ### v1.3.0 (2026-07-03) — Parser auto-discovery + production-audit backlog closure
 
