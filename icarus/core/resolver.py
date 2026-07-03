@@ -1,101 +1,51 @@
 """
 ICARUS Entity Resolver — Atom/Bag/EventLog pattern for cross-source identity.
 
+EXPERIMENTAL / UNWIRED: this subsystem is fully built but is intentionally NOT
+part of ``create_default_pipeline`` — no ``resolve`` phase runs during a normal
+``icarus build``. It is exposed only as an explicitly-experimental entry point:
+construct ``EntityResolver(db_path, experimental=True)`` to acknowledge that the
+API and resolution behavior are unstable and may change.
+
 Entities from different sources may refer to the same real-world thing under
 different identifiers. The resolver tracks immutable atoms (raw observations),
 groups them into bags (resolved entities), and logs every resolution decision
-in an append-only event log.
+in an append-only event log. Blocking is exact-key only (see ``resolve``).
 """
 
 import json
-import sqlite3
+import warnings
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from icarus.core.schema import open_db
 
-class BlockingIndex:
-    """FTS5-backed blocking index for entity resolution candidate generation."""
-
-    def __init__(self, db_path: str):
-        self.conn = sqlite3.connect(db_path)
-
-    def index_atom(
-        self, atom_id: int, entity_type: str, source_key: str, properties: dict,
-    ) -> None:
-        """Manually add an atom to the FTS index (if triggers missed it)."""
-        self.conn.execute(
-            "INSERT OR REPLACE INTO atoms_fts(rowid, entity_type, source_key, properties) "
-            "VALUES (?, ?, ?, ?)",
-            (atom_id, entity_type, source_key, json.dumps(properties)),
-        )
-        self.conn.commit()
-
-    def candidates_for(self, atom_id: int, limit: int = 100) -> List[Tuple[int, float]]:
-        """Return (atom_id, score) pairs of potential matches. Never returns self."""
-        row = self.conn.execute(
-            "SELECT entity_type, source_key, properties FROM atoms WHERE id = ?",
-            (atom_id,),
-        ).fetchone()
-        if not row:
-            return []
-
-        entity_type, source_key, properties = row
-        tokens = self._extract_tokens(entity_type, source_key, properties)
-        if not tokens:
-            return []
-
-        match_expr = " OR ".join(tokens)
-        rows = self.conn.execute(
-            "SELECT rowid, rank FROM atoms_fts WHERE atoms_fts MATCH ? "
-            "ORDER BY rank LIMIT ?",
-            (match_expr, limit + 1),
-        ).fetchall()
-
-        return [(r[0], -r[1]) for r in rows if r[0] != atom_id][:limit]
-
-    def rebuild(self) -> int:
-        """Rebuild the full blocking index from atoms table. Returns atom count."""
-        self.conn.execute("INSERT INTO atoms_fts(atoms_fts) VALUES ('rebuild')")
-        self.conn.commit()
-        count = self.conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0]
-        return count
-
-    def _extract_tokens(self, entity_type: str, source_key: str, properties: str) -> List[str]:
-        """Extract searchable tokens from atom data."""
-        tokens = []
-        for val in [source_key]:
-            for word in val.split():
-                cleaned = "".join(c for c in word if c.isalnum())
-                if cleaned and len(cleaned) > 1:
-                    tokens.append(cleaned)
-        try:
-            props = json.loads(properties) if isinstance(properties, str) else properties
-            for v in props.values():
-                if isinstance(v, str):
-                    for word in v.split():
-                        cleaned = "".join(c for c in word if c.isalnum())
-                        if cleaned and len(cleaned) > 1:
-                            tokens.append(cleaned)
-        except (json.JSONDecodeError, AttributeError):
-            pass
-        return tokens[:10]
-
-    def close(self) -> None:
-        self.conn.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
+# Explicit experimental flag for the atom/bag/resolver subsystem: it is not
+# wired into the default pipeline and its API/behavior are unstable.
+__experimental__ = True
 
 
 class EntityResolver:
-    """Resolve entities across sources using the Atom/Bag/EventLog pattern."""
+    """Resolve entities across sources using the Atom/Bag/EventLog pattern.
 
-    def __init__(self, db_path: str):
-        self.conn = sqlite3.connect(db_path)
-        self.conn.execute("PRAGMA foreign_keys = ON")
+    EXPERIMENTAL: not wired into ``create_default_pipeline``. Pass
+    ``experimental=True`` to acknowledge the unstable API; omitting it emits a
+    warning rather than failing, so existing callers keep working.
+    """
+
+    def __init__(self, db_path: str, *, experimental: bool = False):
+        if not experimental:
+            warnings.warn(
+                "EntityResolver is an experimental, unwired subsystem "
+                "(not part of create_default_pipeline); pass experimental=True "
+                "to acknowledge its unstable API.",
+                stacklevel=2,
+            )
+        self.experimental = experimental
+        # open_db (audit #63/#68) enforces PRAGMA foreign_keys = ON and applies
+        # the RAM-scaled cache/mmap pragmas on this working connection, instead
+        # of a bare sqlite3.connect that silently left REFERENCES unenforced.
+        self.conn = open_db(db_path)
 
     def ingest_atom(
         self, version_id: int, entity_type: str, source_key: str, properties: dict
@@ -208,9 +158,22 @@ class EntityResolver:
         return new_bag_id
 
     def resolve(
-        self, entity_type: str, blocking_keys: List[str], threshold: float = 0.8
+        self, entity_type: str, blocking_keys: List[str]
     ) -> Dict[str, Any]:
-        """Run full resolution: block -> score -> cluster -> merge. Returns stats."""
+        """Group unresolved atoms by EXACT blocking key and bag each group.
+
+        Exact-key-blocking MVP: for each unresolved atom of ``entity_type`` a
+        cluster key is built by joining the lowercased, stripped values of
+        ``blocking_keys`` found in its properties. Atoms sharing a cluster key
+        go into one bag (its ``canonical_key`` is that cluster key); an atom
+        with a unique key gets a singleton bag. Atoms with no value for any
+        blocking key are left unresolved. There is no similarity scoring and no
+        FTS-based candidate blocking.
+
+        Returns ``{"merges": N, "atoms_resolved": M}`` where ``merges`` counts
+        the multi-atom bags created and ``atoms_resolved`` counts atoms placed
+        into any bag.
+        """
         unresolved = self.unresolved_atoms(entity_type)
         if not unresolved:
             return {"merges": 0, "atoms_resolved": 0}
@@ -257,7 +220,7 @@ class EntityResolver:
 
     def _log_event(
         self, event_type: str, bag_id: int, atom_ids: List[int], reason: str = "",
-        confidence: float = None, operator: str = "auto",
+        confidence: Optional[float] = None, operator: str = "auto",
     ) -> None:
         """Append to resolution_event_log. Never update or delete."""
         now = datetime.now(timezone.utc).isoformat()
