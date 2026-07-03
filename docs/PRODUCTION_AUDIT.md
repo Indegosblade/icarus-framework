@@ -2,9 +2,9 @@
 
 Generated from a multi-agent adversarial audit of the framework: **62 agents** across 7 quality dimensions (correctness, robustness, input-security, API design, testing/CI, docs/packaging), each finding independently verified by a skeptical second agent before inclusion.
 
-- **Raised:** 54  •  **Verified real:** 51  •  **Fixed:** 48 (11 on `production-hardening`; 37 more across `fix/parser-autodiscovery` #7 and `fix/audit-backlog` #8)  •  **By design / documented:** 0  •  **Open backlog:** 3
+- **Raised:** 54  •  **Verified real:** 51  •  **Fixed:** 48 + the #93 daemon→binary edge (11 on `production-hardening`; 37 across `fix/parser-autodiscovery` #7 and `fix/audit-backlog` #8; the relationship edge on `feat/relationship-edges` #10)  •  **By design / documented:** 0  •  **Open backlog:** 2 open + #93 partially addressed
 
-`fix/parser-autodiscovery` (#7) closed the registry/phantom-parser findings (#123, #183, #198, #210, #265). `fix/audit-backlog` (#8) closed the remaining differ/schema/STIX/security/resolver/docs findings. Three findings are intentionally deferred — see "Remaining Open Backlog" at the bottom of this document.
+`fix/parser-autodiscovery` (#7) closed the registry/phantom-parser findings (#123, #183, #198, #210, #265). `fix/audit-backlog` (#8) closed the remaining differ/schema/STIX/security/resolver/docs findings. `feat/relationship-edges` (#10) landed the first real relationship edge (daemon→binary linking). Two findings remain fully deferred and #93 is now partially addressed — see "Remaining Open Backlog" at the bottom of this document.
 
 Severity is the verifier's adjusted severity. `line` numbers reference the audited snapshot and may drift as the tree changes.
 
@@ -92,8 +92,9 @@ Severity is the verifier's adjusted severity. `line` numbers reference the audit
 - **Problem:** manifest.produces.event_types is part of the parser contract (exposed at manifest.py:52) but no test ever reads it. ParserTestHarness.test_schema_conformance puts 'observations' in the skip set (testing.py:94) and only checks entity-table membership, so declared-vs-emitted event_type drift is invis…
 - **Fix:** Add an event_types conformance test: collect DISTINCT observations.event_type produced on the fixture and assert it is a subset of manifest.produces.event_types. Remove or repair the dead first loop.
 
-### ◻️ open — extract_relationships is a no-op in 8 of 10 parsers; relationship-backed view is always empty
+### ◧ partially fixed — extract_relationships was a no-op in most parsers; relationship-backed view was always empty
 - **Where:** `icarus/parsers/linux.py:111`  ·  _parsers_
+- **Status (PR #10):** The daemon→binary edge is implemented — `base.py` gained a shared `link_daemons_to_binaries()`, `linux.py` now parses `ExecStart=` to populate `daemons.program` and links to the matching binary, and `macos.py` was refactored onto the same helper. The sandbox-escape-surface view is no longer always empty. Remaining: binaries↔entitlements and other relationship types, and whether the genuinely relationship-free parsers should drop the phase rather than return a hardcoded `{"linked": 0}`.
 - **Problem:** BaseParser.extract_relationships documents linking daemons->binaries, binaries->entitlements, etc. (base.py:62-72), and the pipeline always runs a dedicated 'relationships' phase (core/pipeline.py:224-227). But it returns {'linked': 0} with no work in cloudtrail (cloud/aws/cloudtrail.py:147), all f…
 - **Fix:** Implement linking for parsers that emit multiple entity types (e.g., match a linux daemon's ExecStart path to a binaries.file_id and set daemons.binary_id), or drop the phase for parsers that legitimately produce no relationships instead of returning a hardco…
 
@@ -271,13 +272,13 @@ Severity is the verifier's adjusted severity. `line` numbers reference the audit
 
 ---
 
-## Remaining Open Backlog (3)
+## Remaining Open Backlog (2 open + 1 partial)
 
-Everything else raised and verified real is now fixed. Three findings are intentionally deferred — each requires a design decision or a larger scope than a targeted fix, rather than a mechanical change:
+Everything else raised and verified real is now fixed. Two findings remain fully deferred and #93 is partially addressed (the daemon→binary edge is done; broader relationship coverage remains). Each remaining item requires a design decision or a larger scope than a targeted fix, rather than a mechanical change:
 
-### ◻️ open — extract_relationships is a no-op in 8 of 10 parsers; relationship-backed view is always empty
+### ◧ partially fixed — extract_relationships was a no-op in most parsers; relationship-backed view was always empty
 - **Where:** `icarus/parsers/linux.py:111`  ·  _parsers_
-- **Why deferred:** Implementing real cross-entity linking (e.g. matching a Linux daemon's ExecStart path to a binaries.file_id) is per-parser feature work, not a correctness fix — it wasn't in scope for this remediation pass.
+- **Status:** Done for the daemon→binary edge (PR #10): a shared `link_daemons_to_binaries()` helper lives in `base.py`; `linux.py` now parses `ExecStart=` to populate `daemons.program` and links to the matching binary, and macOS was refactored onto the same helper — so the sandbox-escape-surface view is no longer always empty. **Remaining:** other relationship types (binaries↔entitlements, sandbox profiles↔rules) and deciding whether the genuinely relationship-free parsers should drop the phase instead of returning a hardcoded `{"linked": 0}`.
 
 ### ◻️ open — macOS/Apple ontology reused with wrong semantics by cross-platform parsers
 - **Where:** `icarus/parsers/windows.py:21`  ·  _api-design_
