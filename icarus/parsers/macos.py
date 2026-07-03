@@ -27,7 +27,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
+from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser, link_daemons_to_binaries
 from icarus.parsers.macho import is_macho_magic, macho_info
 
 FILE_TYPES = {
@@ -381,22 +381,8 @@ class MacosParser(BaseParser):
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
         conn = sqlite3.connect(str(db_path))
-        linked = 0
         try:
-            rows = conn.execute(
-                "SELECT id, program FROM daemons WHERE program IS NOT NULL AND binary_id IS NULL"
-            ).fetchall()
-            for daemon_id, program in rows:
-                bin_row = conn.execute(
-                    "SELECT b.id FROM binaries b JOIN files f ON b.file_id = f.id WHERE f.path = ?",
-                    (program,),
-                ).fetchone()
-                if bin_row:
-                    conn.execute(
-                        "UPDATE daemons SET binary_id = ? WHERE id = ?",
-                        (bin_row[0], daemon_id),
-                    )
-                    linked += 1
+            linked = link_daemons_to_binaries(conn)
             conn.commit()
         finally:
             conn.close()
