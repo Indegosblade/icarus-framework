@@ -123,6 +123,48 @@ def cmd_parser(args):
         sys.exit(1)
 
 
+def cmd_resolve(args):
+    from datetime import datetime, timezone
+
+    from icarus.core.atomize import atomize_db
+    from icarus.core.schema import initialize_database, open_db
+
+    entity_types = None if args.entity_type == "all" else [args.entity_type]
+
+    out_path = Path(args.out)
+    initialize_database(out_path)
+    out_conn = open_db(out_path)
+    try:
+        total = 0
+        for i, src in enumerate(args.sources):
+            src_path = Path(src)
+            if not src_path.exists():
+                print(f"ERROR: Source database does not exist: {src_path}", file=sys.stderr)
+                sys.exit(1)
+            src_conn = open_db(src_path, readonly=True)
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+                run_id = f"resolve-{i}-{src_path.name}"
+                cursor = out_conn.execute(
+                    "INSERT INTO versions (run_id, parser_name, source_path, started_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (run_id, "resolve", str(src), now),
+                )
+                out_conn.commit()
+                version_id = cursor.lastrowid
+                assert version_id is not None
+                counts = atomize_db(src_conn, out_conn, version_id, entity_types)
+            finally:
+                src_conn.close()
+            src_total = sum(counts.values())
+            total += src_total
+            detail = ", ".join(f"{k}={v}" for k, v in counts.items())
+            print(f"[{i + 1}/{len(args.sources)}] {src_path.name}: {src_total} atoms ({detail})")
+        print(f"Total atoms: {total} across {len(args.sources)} source(s) -> {out_path}")
+    finally:
+        out_conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="icarus",
@@ -168,6 +210,18 @@ def main():
     test_p.add_argument("parser_name", help="Name of the parser to test")
     parser_sub.add_parser("list", help="List all registered parsers")
 
+    # resolve
+    from icarus.core.atomize import ATOM_PROJECTIONS
+    resolve_p = sub.add_parser(
+        "resolve", help="Atomize one or more source databases into a resolution database")
+    resolve_p.add_argument(
+        "--out", "-o", required=True, help="Output resolution database path")
+    resolve_p.add_argument(
+        "--entity-type", choices=list(ATOM_PROJECTIONS) + ["all"], default="all",
+        help="Entity type to atomize (default: all)")
+    resolve_p.add_argument(
+        "sources", nargs="+", help="One or more source ICARUS database paths")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -175,7 +229,7 @@ def main():
 
     try:
         {"build": cmd_build, "query": cmd_query, "diff": cmd_diff,
-         "parser": cmd_parser}[args.command](args)
+         "parser": cmd_parser, "resolve": cmd_resolve}[args.command](args)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

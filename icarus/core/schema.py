@@ -146,7 +146,7 @@ def open_db(path: Union[str, Path], *, readonly: bool = False) -> sqlite3.Connec
     return conn
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 ENTITY_TABLES = (
     "files", "binaries", "daemons", "entitlements",
@@ -335,7 +335,8 @@ CREATE TABLE IF NOT EXISTS bags (
     canonical_key TEXT,
     created_at TEXT NOT NULL,
     resolved_at TEXT,
-    atom_count INTEGER DEFAULT 1
+    atom_count INTEGER DEFAULT 1,
+    score REAL
 );
 
 CREATE TABLE IF NOT EXISTS bag_atoms (
@@ -353,6 +354,17 @@ CREATE TABLE IF NOT EXISTS resolution_event_log (
     confidence REAL,
     operator TEXT,
     timestamp TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS match_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    atom_a INTEGER NOT NULL REFERENCES atoms(id),
+    atom_b INTEGER NOT NULL REFERENCES atoms(id),
+    score REAL NOT NULL,
+    features TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(atom_a, atom_b)
 );
 
 CREATE TABLE IF NOT EXISTS mach_services (
@@ -391,6 +403,8 @@ CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type);
 CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id);
 CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type);
 CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id);
+CREATE INDEX IF NOT EXISTS idx_match_entity ON match_candidates(entity_type);
+CREATE INDEX IF NOT EXISTS idx_match_atom_a ON match_candidates(atom_a);
 CREATE INDEX IF NOT EXISTS idx_mach_daemon ON mach_services(daemon_id);
 CREATE INDEX IF NOT EXISTS idx_mach_service ON mach_services(service_name);
 """
@@ -632,11 +646,51 @@ def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _v5_to_v6(conn: sqlite3.Connection) -> None:
+    """Additive migration: adds match_candidates and the bags.score column.
+
+    match_candidates records scored atom-pair candidates (the output of the
+    scored-resolver increment) and bags gains a score column for the
+    confidence of a resolved grouping.
+
+    The CREATE TABLE text below is kept byte-identical (same 4-space column
+    indentation) to the match_candidates definition in CORE_SCHEMA so that a
+    freshly-initialized v6 database and a v5 database upgraded through here
+    store the same statement in sqlite_master. ALTER TABLE cannot be made
+    conditional, so bags.score is added only when PRAGMA table_info shows it
+    is absent — which makes re-running this migration a safe no-op.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS match_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    atom_a INTEGER NOT NULL REFERENCES atoms(id),
+    atom_b INTEGER NOT NULL REFERENCES atoms(id),
+    score REAL NOT NULL,
+    features TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(atom_a, atom_b)
+)""")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_match_entity ON match_candidates(entity_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_match_atom_a ON match_candidates(atom_a)"
+    )
+    bags_cols = {r[1] for r in conn.execute("PRAGMA table_info(bags)").fetchall()}
+    if "score" not in bags_cols:
+        conn.execute("ALTER TABLE bags ADD COLUMN score REAL")
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
+        ("schema_version", "6")
+    )
+    conn.commit()
+
+
 def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
     """
     Create and initialize an ICARUS database.
 
-    Creates a fresh v5 database, or migrates an existing v2/v3/v4 database
+    Creates a fresh v6 database, or migrates an existing v2/v3/v4/v5 database
     forward. Returns stats dict with table count and schema version.
     """
     conn = open_db(db_path)
@@ -655,11 +709,16 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
             migrate_v2_to_v3(conn)
             migrate_v3_to_v4(conn)
             migrate_v4_to_v5(conn)
+            _v5_to_v6(conn)
         elif existing_version == 3:
             migrate_v3_to_v4(conn)
             migrate_v4_to_v5(conn)
+            _v5_to_v6(conn)
         elif existing_version == 4:
             migrate_v4_to_v5(conn)
+            _v5_to_v6(conn)
+        elif existing_version == 5:
+            _v5_to_v6(conn)
         elif existing_version is None or existing_version < 2:
             conn.executescript(CORE_SCHEMA)
             conn.executescript(INDEXES)
