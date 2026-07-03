@@ -16,8 +16,9 @@ in an append-only event log. Blocking is exact-key only (see ``resolve``).
 import json
 import warnings
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from icarus.core.matching import candidate_pairs, cluster, score_pair
 from icarus.core.schema import open_db
 
 # Explicit experimental flag for the atom/bag/resolver subsystem: it is not
@@ -207,6 +208,119 @@ class EntityResolver:
                 atoms_resolved += 1
 
         return {"merges": merges, "atoms_resolved": atoms_resolved}
+
+    def resolve_scored(
+        self,
+        entity_type: str,
+        blocking_keys: Optional[List[str]] = None,
+        *,
+        threshold: float = 0.85,
+    ) -> Dict[str, Any]:
+        """The real **block -> score -> cluster -> merge** resolution.
+
+        Where :meth:`resolve` is the exact-key-blocking MVP (identical values
+        or nothing), this runs the full scored pipeline over the currently
+        *unresolved* atoms of ``entity_type``:
+
+        1. **block** — :func:`~icarus.core.matching.candidate_pairs` generates
+           plausibly-same-entity atom pairs (restricted here to unresolved
+           atoms on both ends).
+        2. **score** — :func:`~icarus.core.matching.score_pair` assigns each
+           candidate a similarity in ``[0, 1]``. *Every* scored candidate is
+           persisted to ``match_candidates`` (score + JSON features) so the
+           decision is auditable, not just the ones that clear the bar.
+        3. **cluster** — :func:`~icarus.core.matching.cluster` union-finds the
+           pairs scoring ``>= threshold`` into connected components, so a chain
+           ``a~b~c`` merges even without a direct ``a~c`` edge.
+        4. **merge** — each multi-atom component becomes one bag whose
+           ``canonical_key`` is the ``source_key`` of its smallest-id member
+           and whose ``bags.score`` is the mean of that component's in-cluster
+           match-edge scores; a ``"resolve"`` event carrying that confidence is
+           logged. Every still-unresolved atom outside all components gets a
+           1-atom singleton bag (score left NULL).
+
+        ``threshold`` is the score cutoff for a candidate to count as a match
+        edge. Results are fully auditable via the ``match_candidates`` rows,
+        ``bags.score``, and the resolution event log.
+
+        Returns ``{"clusters": C, "merges": E, "atoms_resolved": N}`` where
+        ``C`` is the number of multi-atom bags created, ``E`` the number of
+        match edges above ``threshold``, and ``N`` the number of atoms that
+        were unresolved when the call started.
+        """
+        unresolved = set(self.unresolved_atoms(entity_type))
+        if not unresolved:
+            return {"clusters": 0, "merges": 0, "atoms_resolved": 0}
+
+        # Load properties (for scoring) and source_key (for the canonical key)
+        # once per unresolved atom, filtering the full entity_type set in memory.
+        props: Dict[int, dict] = {}
+        source_keys: Dict[int, str] = {}
+        for atom_id, source_key, properties in self.conn.execute(
+            "SELECT id, source_key, properties FROM atoms WHERE entity_type = ?",
+            (entity_type,),
+        ).fetchall():
+            if atom_id in unresolved:
+                props[atom_id] = json.loads(properties)
+                source_keys[atom_id] = source_key
+
+        # ── block ── keep only candidates whose BOTH ends are unresolved.
+        cands = {
+            (a, b)
+            for (a, b) in candidate_pairs(self.conn, entity_type, blocking_keys)
+            if a in unresolved and b in unresolved
+        }
+
+        # ── score ── persist every candidate; a >= threshold pair is an edge.
+        now = datetime.now(timezone.utc).isoformat()
+        match_edges: List[Tuple[int, int, float]] = []
+        for a, b in cands:
+            score, features = score_pair(entity_type, props[a], props[b])
+            self.conn.execute(
+                "INSERT OR IGNORE INTO match_candidates "
+                "(entity_type, atom_a, atom_b, score, features, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (entity_type, a, b, score, json.dumps(features), now),
+            )
+            if score >= threshold:
+                match_edges.append((a, b, score))
+
+        # ── cluster ── connected components of the above-threshold edges.
+        components = cluster([(a, b) for (a, b, _) in match_edges])
+
+        # ── merge ── one bag per multi-atom component; the rest are singletons.
+        clustered: Set[int] = set()
+        for component in components:
+            member_scores = [
+                s for (a, b, s) in match_edges if a in component and b in component
+            ]
+            confidence: Optional[float] = (
+                sum(member_scores) / len(member_scores) if member_scores else None
+            )
+            ordered = sorted(component)
+            canonical_key = source_keys[ordered[0]]
+            bag_id = self.create_bag(entity_type, ordered, canonical_key=canonical_key)
+            self.conn.execute(
+                "UPDATE bags SET score = ? WHERE id = ?", (confidence, bag_id)
+            )
+            self._log_event(
+                "resolve",
+                bag_id,
+                ordered,
+                reason=f"scored cluster (threshold={threshold})",
+                confidence=confidence,
+            )
+            clustered.update(component)
+
+        for atom_id in sorted(unresolved - clustered):
+            self.create_bag(entity_type, [atom_id])
+
+        self.conn.commit()
+        return {
+            "clusters": len(components),
+            "merges": len(match_edges),
+            "atoms_resolved": len(unresolved),
+        }
 
     def unresolved_atoms(self, entity_type: str) -> List[int]:
         """Atoms not assigned to any bag."""
