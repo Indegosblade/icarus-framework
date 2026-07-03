@@ -30,6 +30,7 @@ def cmd_build(args):
         output=Path(args.output),
         parser_name=parser_name,
         skip_hygeia=args.skip_hygeia,
+        resolve=args.resolve,
     )
     pipeline.run(resume=not args.fresh)
 
@@ -126,7 +127,8 @@ def cmd_parser(args):
 def cmd_resolve(args):
     from datetime import datetime, timezone
 
-    from icarus.core.atomize import atomize_db
+    from icarus.core.atomize import ATOM_PROJECTIONS, atomize_db
+    from icarus.core.resolver import EntityResolver
     from icarus.core.schema import initialize_database, open_db
 
     entity_types = None if args.entity_type == "all" else [args.entity_type]
@@ -164,6 +166,31 @@ def cmd_resolve(args):
     finally:
         out_conn.close()
 
+    if args.atomize_only:
+        return
+
+    # The atomize connection above is fully closed before EntityResolver opens
+    # its own working connection to the same file — never two write handles
+    # open on out_path at once.
+    resolved_types = list(ATOM_PROJECTIONS) if args.entity_type == "all" else [args.entity_type]
+
+    with EntityResolver(str(out_path), experimental=True) as r:
+        for et in resolved_types:
+            result = r.resolve_scored(et, threshold=args.threshold)
+            print(
+                f"[resolve] {et}: clusters={result['clusters']} "
+                f"merges={result['merges']} atoms_resolved={result['atoms_resolved']}"
+            )
+
+        canonical_count = r.conn.execute("SELECT COUNT(*) FROM bags").fetchone()[0]
+        cross_source_count = r.conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT bag_id FROM bag_atoms ba JOIN atoms a ON a.id = ba.atom_id "
+            "GROUP BY bag_id HAVING COUNT(DISTINCT a.source_version_id) >= 2)"
+        ).fetchone()[0]
+
+    print(f"Canonical entities: {canonical_count} ({cross_source_count} spanning >= 2 sources)")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -185,6 +212,10 @@ def main():
     build_p.add_argument(
         "--skip-hygeia", action="store_true",
         help="Skip HYGEIA sanitization (output will contain raw unsanitized data)")
+    build_p.add_argument(
+        "--resolve", action="store_true",
+        help="EXPERIMENTAL: run entity resolution (resolve_scored) as a build phase, "
+             "after verify and before sanitize")
 
     # query
     query_p = sub.add_parser("query", help="Query an intelligence database")
@@ -213,12 +244,19 @@ def main():
     # resolve
     from icarus.core.atomize import ATOM_PROJECTIONS
     resolve_p = sub.add_parser(
-        "resolve", help="Atomize one or more source databases into a resolution database")
+        "resolve",
+        help="Atomize one or more source databases and resolve entities across them")
     resolve_p.add_argument(
         "--out", "-o", required=True, help="Output resolution database path")
     resolve_p.add_argument(
         "--entity-type", choices=list(ATOM_PROJECTIONS) + ["all"], default="all",
-        help="Entity type to atomize (default: all)")
+        help="Entity type to atomize and resolve (default: all)")
+    resolve_p.add_argument(
+        "--threshold", type=float, default=0.85,
+        help="Score threshold in [0, 1] for a candidate pair to merge (default: 0.85)")
+    resolve_p.add_argument(
+        "--atomize-only", action="store_true",
+        help="Stop after atomizing sources; skip scored resolution")
     resolve_p.add_argument(
         "sources", nargs="+", help="One or more source ICARUS database paths")
 

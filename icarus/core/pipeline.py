@@ -236,7 +236,7 @@ class Pipeline:
 
 def create_default_pipeline(
     source: Path, output: Path, parser_name: str = "windows",
-    skip_hygeia: bool = False,
+    skip_hygeia: bool = False, resolve: bool = False,
 ) -> Pipeline:
     """Create a pipeline with the standard phase sequence.
 
@@ -244,6 +244,14 @@ def create_default_pipeline(
         skip_hygeia: If True, skips HYGEIA sanitization. The output database
             will contain raw, unsanitized data. A warning is printed and
             the skip is recorded in the database metadata.
+        resolve: If True, inserts an EXPERIMENTAL "resolve" phase after
+            "verify" and before the sanitize/skip_hygeia_marker phase, which
+            atomizes this build's own entities and runs
+            ``EntityResolver.resolve_scored`` over them (see
+            ``icarus.core.resolver``). Default False leaves the phase list
+            unchanged from before this option existed. For cross-source
+            resolution (multiple builds merged together), use the separate
+            ``icarus resolve`` CLI command instead.
     """
     from icarus.core.schema import initialize_database
     from icarus.integrations.hygeia import sanitize_output
@@ -252,10 +260,6 @@ def create_default_pipeline(
     pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
     parser = get_parser(parser_name)
 
-    # NOTE: the atom/bag EntityResolver subsystem (icarus.core.resolver) is
-    # experimental and intentionally NOT wired in as a 'resolve' phase here.
-    # Use it only via the explicit EntityResolver(..., experimental=True) entry
-    # point until its API/behavior stabilize.
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
                        "Initialize SQLite database and schema")
     pipeline.add_phase("ingest", lambda ctx: parser.extract_entities(ctx.source, ctx.output_db),
@@ -266,6 +270,11 @@ def create_default_pipeline(
         "Map relationships between entities")
     pipeline.add_phase("verify", lambda ctx: parser.verify(ctx.output_db),
                        "Quality gates and verification")
+
+    if resolve:
+        pipeline.add_phase(
+            "resolve", _resolve_phase,
+            "EXPERIMENTAL: entity resolution (resolve_scored)")
 
     if skip_hygeia:
         print("\n" + "!" * 60)
@@ -280,6 +289,29 @@ def create_default_pipeline(
                            "HYGEIA sanitization pass")
 
     return pipeline
+
+
+def _resolve_phase(ctx) -> dict:
+    """EXPERIMENTAL pipeline phase: atomize this build's entities and resolve them.
+
+    Runs entirely within the build's own output database: atomizes the
+    entities just produced by the "ingest"/"relationships" phases (tagged
+    under this run's own ``ctx.version_id``, already populated before any
+    phase runs — see ``Pipeline._create_version_record``), then runs
+    ``EntityResolver.resolve_scored`` for every projected entity type. This
+    resolves duplicates *within* one build; it does not merge across separate
+    builds — use the ``icarus resolve`` CLI command for that.
+    """
+    print("[ICARUS] EXPERIMENTAL: running entity resolution (resolve_scored) "
+          "— API/behavior may still change.")
+    from icarus.core.atomize import ATOM_PROJECTIONS, atomize_db
+    from icarus.core.resolver import EntityResolver
+
+    with EntityResolver(str(ctx.output_db), experimental=True) as r:
+        atomized = atomize_db(r.conn, r.conn, ctx.version_id)
+        resolved = {et: r.resolve_scored(et) for et in ATOM_PROJECTIONS}
+
+    return {"atomized": atomized, "resolved": resolved}
 
 
 def _mark_hygeia_skipped(ctx) -> dict:
