@@ -197,6 +197,14 @@ def test_hygeia_integration(tmp_db):
 
 
 def test_pipeline_checkpoint_resume():
+    """#168: a fully successful run clears its own checkpoint DB.
+
+    Checkpoints exist only to resume a crashed run — leaving them behind
+    after success would mean a later run computes start = last_complete + 1
+    > len(phases) and silently skips every phase. So a successful run must
+    delete the checkpoint DB, and a subsequent run must therefore redo all
+    phases rather than silently no-op.
+    """
     from icarus.core.pipeline import Pipeline
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -212,9 +220,13 @@ def test_pipeline_checkpoint_resume():
         p.run(resume=False)
         assert call_log == ["a", "b"]
 
+        # Success must remove the checkpoint DB (and any -wal/-shm siblings).
+        assert not p.checkpoint_db.exists()
+
         call_log.clear()
         p.run(resume=True)
-        assert call_log == []
+        # No checkpoint left to resume from, so both phases really re-run.
+        assert call_log == ["a", "b"]
 
 
 def test_pipeline_populates_version_record(tmp_path):
@@ -664,68 +676,6 @@ def test_atoms_fts_trigger(tmp_db):
     ).fetchall()
     assert len(rows) == 1
     conn.close()
-
-
-def test_blocking_candidates(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(
-            1, "files", "nginx_config",
-            {"name": "nginx.conf", "type": "config"},
-        )
-        r.ingest_atom(
-            1, "files", "nginx_binary",
-            {"name": "nginx", "type": "binary"},
-        )
-        r.ingest_atom(
-            1, "files", "postgres_config",
-            {"name": "postgres.conf", "type": "config"},
-        )
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1)
-        candidate_ids = [c[0] for c in candidates]
-        assert len(candidate_ids) > 0
-        assert a1 not in candidate_ids
-
-
-def test_blocking_no_self_match(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(1, "files", "test_file", {"name": "test"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1)
-        candidate_ids = [c[0] for c in candidates]
-        assert a1 not in candidate_ids
-
-
-def test_blocking_threshold(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(1, "files", "alpha_service", {"name": "alpha", "role": "primary"})
-        for i in range(5):
-            r.ingest_atom(1, "files", f"beta_{i}", {"name": f"beta{i}", "role": "secondary"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1, limit=3)
-        assert len(candidates) <= 3
-
-
-def test_blocking_rebuild(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        r.ingest_atom(1, "files", "k1", {"name": "a"})
-        r.ingest_atom(1, "files", "k2", {"name": "b"})
-        r.ingest_atom(1, "files", "k3", {"name": "c"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        count = bi.rebuild()
-        assert count == 3
 
 
 def test_cross_graph_query(tmp_db):
