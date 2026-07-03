@@ -146,9 +146,13 @@ def test_cmd_resolve_entity_type_all_resolves_every_projected_type(tmp_path):
 
     conn = sqlite3.connect(str(out_path))
     try:
-        # No daemons in either source, but resolving "all" must not error out
-        # on the empty daemons type — only the 2 binaries atoms show up.
-        assert conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0] == 2
+        # No daemons/frameworks/kexts in either source, but resolving "all" must
+        # not error out on those empty types. _make_source_db's one `files` row
+        # per source (the binaries FK target) is itself now a projected type
+        # too, so each source contributes 1 binaries + 1 files atom (4 total),
+        # and both pairs (same path/filename/sha256, same executable_name)
+        # cross-source merge.
+        assert conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0] == 4
         assert conn.execute(
             "SELECT COUNT(*) FROM bag_atoms ba JOIN atoms a ON a.id = ba.atom_id "
             "GROUP BY ba.bag_id HAVING COUNT(DISTINCT a.source_version_id) >= 2"

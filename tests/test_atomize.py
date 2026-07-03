@@ -80,7 +80,12 @@ def test_atomize_basic(db_path):
         conn.commit()
 
         counts = atomize_db(conn, conn, version_id)
-        assert counts == {"binaries": 2, "daemons": 1}
+        # entity_types=None sweeps every registered projection (Increment B added
+        # frameworks/kexts/files); the two `files` rows above (inserted only as
+        # the binaries FK target) are themselves now a projected type too.
+        assert counts == {
+            "binaries": 2, "daemons": 1, "frameworks": 0, "kexts": 0, "files": 2,
+        }
 
         # A binary atom is keyed by executable_name and carries the joined props.
         row = conn.execute(
@@ -155,13 +160,20 @@ def test_atomize_idempotent(db_path):
         conn.commit()
 
         first = atomize_db(conn, conn, version_id)
-        assert first == {"binaries": 1, "daemons": 1}
+        # entity_types=None sweeps every registered projection (Increment B added
+        # frameworks/kexts/files); the `files` row above (inserted only as the
+        # binaries FK target) is itself now a projected type too.
+        assert first == {
+            "binaries": 1, "daemons": 1, "frameworks": 0, "kexts": 0, "files": 1,
+        }
 
         # Second run over the same source under the same version inserts nothing.
         second = atomize_db(conn, conn, version_id)
-        assert second == {"binaries": 0, "daemons": 0}
+        assert second == {
+            "binaries": 0, "daemons": 0, "frameworks": 0, "kexts": 0, "files": 0,
+        }
 
-        assert conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM atoms").fetchone()[0] == 3
     finally:
         conn.close()
 
