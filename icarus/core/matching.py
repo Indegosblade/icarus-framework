@@ -1,7 +1,7 @@
-"""ICARUS Matching — the block + score half of the scored entity resolver.
+"""ICARUS Matching — the block + score + cluster stages of the scored resolver.
 
 The scored resolver is a four-stage pipeline: **block -> score -> cluster ->
-merge**. This module owns the first two stages over the immutable ``atoms``
+merge**. This module owns the first three stages over the immutable ``atoms``
 table (raw per-source observations projected by :mod:`icarus.core.atomize`):
 
 * **block** (:func:`candidate_pairs`) — cheaply generate a small set of atom
@@ -14,12 +14,16 @@ table (raw per-source observations projected by :mod:`icarus.core.atomize`):
   ``[0, 1]`` via a per-entity-type set of weighted :class:`FieldRule` field
   comparators, returning the aggregate score plus the per-field feature values
   (useful for explainability and thresholding downstream).
+* **cluster** (:func:`cluster`) — union-find the high-scoring pairs into
+  connected components (transitively), so a chain of pairwise matches collapses
+  into one entity even where no single pair spans the whole chain.
 
 Everything here is stdlib-only (``difflib``, ``re``, ``json``, ``sqlite3``,
 ``dataclasses``, ``typing``) and side-effect-free with respect to the database
-(reads only). It has no consumer yet: the upcoming ``resolve_scored`` (the next
-increment) is what will call :func:`candidate_pairs` then :func:`score_pair`,
-cluster the high-scoring pairs, and merge them into bags.
+(reads only). The consumer is :meth:`icarus.core.resolver.EntityResolver.
+resolve_scored`, which calls :func:`candidate_pairs`, then :func:`score_pair`,
+then :func:`cluster`, and finally merges each component into a bag (the fourth
+stage, which is the part that writes to the database).
 """
 
 import difflib
@@ -28,7 +32,7 @@ import re
 import sqlite3
 import sys
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 # ── Normalization + tokenization ──────────────────────────────────────────
 
@@ -277,3 +281,52 @@ def candidate_pairs(
             pass
 
     return pairs
+
+
+# ── Clustering (union-find) ───────────────────────────────────────────────
+
+
+def cluster(edges: Iterable[Tuple[int, int]]) -> List[Set[int]]:
+    """The **cluster** stage of block -> score -> cluster -> merge.
+
+    Union-find (disjoint-set) over ``edges``: each edge ``(a, b)`` asserts that
+    its two endpoints belong to the same entity. Returns the connected
+    components as a list of sets, **each containing at least two ids** — only
+    nodes that appear in at least one (non-self) edge are included. The relation
+    is transitive: edges ``(1, 2)`` and ``(2, 3)`` collapse into a single
+    component ``{1, 2, 3}`` even though no edge directly links 1 and 3.
+
+    Output is deterministic: the component list is sorted by each component's
+    smallest id (components are disjoint, so their minima are distinct). Empty
+    input yields ``[]``.
+    """
+    parent: Dict[int, int] = {}
+
+    def find(x: int) -> int:
+        # Walk to the root, then compress the path so future finds are flat.
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: int, b: int) -> None:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            # Smaller id becomes the representative (stable, keeps trees shallow).
+            hi, lo = (ra, rb) if ra > rb else (rb, ra)
+            parent[hi] = lo
+
+    for a, b in edges:
+        union(a, b)
+
+    components: Dict[int, Set[int]] = {}
+    for node in parent:
+        components.setdefault(find(node), set()).add(node)
+
+    result = [members for members in components.values() if len(members) >= 2]
+    result.sort(key=min)
+    return result
