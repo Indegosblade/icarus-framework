@@ -17,6 +17,19 @@ First end-to-end run of the scored resolver (`resolve_scored`) on real data. A r
 
 Every binary and daemon observed under both source versions merged into one canonical `bags` row carrying a `score`; every scored pair — above *or* below threshold — is retained in `match_candidates`, so each merge is auditable after the fact. The exact-key `resolve()` MVP and all pre-existing resolver behavior are unchanged.
 
+## v1.4.0 — Resolver calibration & real-drift validation
+
+Coverage was extended to five entity types (binaries, daemons, frameworks, kexts, files) and the merge threshold was **measured** rather than guessed, via a controlled-perturbation harness (`python -m icarus.core.resolver_eval`) that runs the real resolver over atoms with known ground-truth labels. Full methodology and the decision live in [docs/RESOLVER_CALIBRATION.md](../docs/RESOLVER_CALIBRATION.md).
+
+**Real two-dump stress test.** Two dumps built from real `/usr/bin` ELF binaries — dump A (50 binaries) and dump B = A with *real* controlled drift (recompile = appended bytes → a real SHA-256 change at the same name/path; rename; 10 genuinely-new; 10 deleted) — were run through the full pipeline (`icarus build` ×2 → `icarus resolve`) and scored against the exact ground truth:
+
+| threshold | precision | recall | per-category recall |
+|----------:|----------:|-------:|---------------------|
+| 0.40–0.50 | 1.00 | 1.00 | identical / recompile / rename all 1.0 |
+| 0.85 (default) | 1.00 | 0.50 | recompiles + renames missed |
+
+The synthetic harness and the real dumps agree to the number: recompiled/renamed binaries score ~0.538, so the precision-first default 0.85 misses them (recall 0.50, precision 1.00) while a threshold ≤0.53 recovers **all** of them (recall 1.00). The resolver *can* match them — the limit is the threshold, not the engine — and calibration is per-corpus: real `/usr/bin` has no two distinct binaries sharing a name+path, so it stays precision-safe even at 0.40, whereas a corpus with such collisions would not (which is why 0.85 remains the conservative default).
+
 ## v1.2.0 — iOS 27.0 daemon attack-surface map
 
 First end-to-end run of the `macos` parser against a real Apple firmware image.
