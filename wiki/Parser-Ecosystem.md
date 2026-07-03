@@ -18,7 +18,9 @@ Schema: `icarus/parsers/schema/parser_manifest.schema.json`
 
 ### 2. Parser Registry
 
-The registry holds all parser instances and their manifests. When `icarus build` runs without `--parser`, the registry runs a **detection contest**:
+The registry holds all parser instances and their manifests. Registration is automatic: every concrete `BaseParser` subclass found anywhere under `icarus/parsers/` — including local-only parsers in the gitignored `icarus/parsers/private/` package — is discovered and registered at import time, and an installed distribution can advertise additional parsers through the `icarus.parsers` entry-point group. There is no hand-maintained list of parsers to keep in sync; discovery and manifest-load failures are logged rather than silently swallowed. See [about/PARSERS.md](../about/PARSERS.md) for the registration walkthrough.
+
+When `icarus build` runs without `--parser`, the registry runs a **detection contest**:
 
 1. Every registered parser's `identify()` runs against the source
 2. Parsers that return True are candidates

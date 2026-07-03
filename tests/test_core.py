@@ -33,7 +33,7 @@ def test_imports():
     from icarus.core import VALID_FTS_TABLES, VALID_TABLES
     from icarus.core.schema import SCHEMA_VERSION
     from icarus.parsers import list_parsers
-    assert __version__ == "1.2.0"
+    assert __version__ == "1.3.0"
     assert SCHEMA_VERSION == 5
     assert len(VALID_TABLES) == 16
     assert len(VALID_FTS_TABLES) == 3

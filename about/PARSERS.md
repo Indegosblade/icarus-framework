@@ -177,20 +177,32 @@ The test harness verifies this: second run must add zero entities.
 
 ## Registration
 
-### With Manifest (recommended)
+Parsers are auto-discovered — there is no list to edit.
 
-1. Create your parser module (e.g., `icarus/parsers/cloud/my_cloud.py`)
-2. Create a YAML manifest alongside it (e.g., `icarus/parsers/cloud/my_cloud.yaml`)
-3. Add to the `_ALL_PARSERS` list in `icarus/parsers/__init__.py`:
+### In this repo (recommended)
 
-```python
-_ALL_PARSERS = [
-    # ... existing parsers ...
-    ("icarus.parsers.cloud.my_cloud", "MyCloudParser", "cloud/my_cloud.yaml"),
-]
+1. Create your parser module (e.g., `icarus/parsers/cloud/my_cloud.py`) with a concrete `BaseParser` subclass.
+2. Create a YAML manifest alongside it (e.g., `icarus/parsers/cloud/my_cloud.yaml`).
+3. That's it. At import time, `icarus.parsers` walks the package tree and registers every concrete `BaseParser` subclass it finds; the sibling `<module>.yaml` becomes that parser's manifest automatically.
+
+The parser is immediately available via CLI (`--parser cloud/my_cloud`) and auto-detection — no registry file to edit.
+
+### Local-only (not published)
+
+Drop the module (plus an optional manifest) into the gitignored `icarus/parsers/private/` package instead of `icarus/parsers/`. It is discovered and registered exactly the same way, but never tracked in git or shipped in the published package — for parsers written against data you don't want in a public repo.
+
+### From an installed package
+
+A separately-packaged distribution can advertise a parser without touching this repo at all, via the `icarus.parsers` entry-point group in its own `pyproject.toml`:
+
+```toml
+[project.entry-points."icarus.parsers"]
+my_cloud = "my_pkg.custom_parser:MyCloudParser"
 ```
 
-The parser is immediately available via CLI (`--parser cloud/my_cloud`) and auto-detection.
+ICARUS loads every entry point in that group at import time and registers the classes it finds, the same as a directory-discovered parser.
+
+Discovery and manifest-load failures are logged (module or manifest name plus the exception), never silently swallowed — a broken or half-written parser degrades to "that one parser doesn't register," not a lost registry.
 
 ### Quality Tiers
 

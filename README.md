@@ -164,6 +164,8 @@ with EntityResolver("intel.db") as r:
 export_to_stix(Path("intel.db"), Path("bundle.json"))
 ```
 
+The top-level `icarus` package curates a public surface via `__all__`: `Pipeline`, `create_default_pipeline`, `IcarusQuery`, `BaseParser`, and `initialize_database` import directly from `icarus` (e.g. `from icarus import create_default_pipeline`) instead of reaching into `icarus.core.*`. The differ, resolver, and STIX export stay submodule imports, as shown above.
+
 ---
 
 ## Parsers
@@ -225,11 +227,13 @@ See [wiki/Schema-Reference](wiki/Schema-Reference.md) for full column definition
 
 **Entity resolution** — the Atom/Bag/EventLog pattern groups observations from different sources that refer to the same real-world entity. Atoms are immutable. Bags merge and split with full reversibility. An append-only event log records every resolution decision. FTS5 blocking index generates candidate pairs without O(n^2) comparison.
 
-**Diff categories** — ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE. The differ attaches two databases and runs set-difference queries directly in SQLite.
+**Diff categories** — ADDITION, DELETION, PROPERTY_CHANGE, STRUCTURAL, RESOLUTION_CHANGE. The differ opens both databases immutable and read-only (`mode=ro&immutable=1` — no `-wal`/`-shm`, safe on untrusted exports) and runs set-difference queries directly in SQLite. Property comparisons are NULL-safe (`IS NOT`, so a change to/from NULL is never missed) and entity identity is diffed on natural keys (e.g. bundle ID + entitlement key/value), not autoincrement IDs that carry no meaning across databases.
+
+**Connection hygiene** — all core code routes through a single `open_db()` helper: `PRAGMA foreign_keys = ON` is enforced on every working connection (not just the one-shot connection used to create the schema), and cache/mmap pragmas scale to available system RAM on every connection, not only the initial one.
 
 **PII sanitization** — [HYGEIA](https://github.com/Indegosblade/HYGEIA) runs as a pipeline phase. PII is stripped before the database is marked complete, not as a separate post-processing step.
 
-**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects. Diffs map to STIX Note objects. Deterministic IDs make bundles diffable.
+**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects, each carrying the spec-required `created`/`modified` timestamps; observed-data SDOs carry valid `object_refs`. Diffs map to STIX Note objects across all four diff categories (addition, deletion, change, structural). Deterministic IDs make bundles diffable.
 
 See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and extension points.
 
@@ -243,7 +247,7 @@ See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and exte
 pytest tests/ -x -q
 ```
 
-99 tests across 10 modules covering schema, queries, diffing, pipeline, entity resolution, observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, and STIX export.
+163 tests across 13 modules covering schema, queries, diffing, pipeline, entity resolution, observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
 
 CI runs the full test matrix on every push:
 
@@ -273,11 +277,11 @@ mypy icarus/
 bandit -r icarus/ -c pyproject.toml
 ```
 
-Runs [Bandit](https://bandit.readthedocs.io/) static analysis. Excluded rules are documented in `pyproject.toml` with rationale (e.g., B101 assert in tests, B608 SQL string formatting in parameterized queries).
+Runs [Bandit](https://bandit.readthedocs.io/) static analysis. B608 (SQL injection via string-built queries) is intentionally **not** in the skip list — this codebase builds SQL with f-strings pervasively, and B608 is the exact bug class it is prone to. Call sites verified safe (table/column names checked against `validate_table`/`validate_column` or sourced from `sqlite_master`, values passed as bound `?` parameters) carry a targeted `# nosec B608` with a one-line justification instead of a blanket skip. Other excluded rules are documented in `pyproject.toml` with rationale (e.g., B101 assert in tests, B110/B112 try-except-pass in defensive parser code).
 
 ### Writing a parser
 
-Implement `BaseParser`, add a YAML manifest, register it in `icarus/parsers/__init__.py`:
+Implement `BaseParser` and drop the module into `icarus/parsers/`:
 
 ```python
 from icarus.parsers.base import BaseParser
@@ -301,6 +305,8 @@ class MyParser(BaseParser):
     def extract_relationships(self, source: Path, db_path: Path) -> dict:
         """Link entities together."""
 ```
+
+Parsers are auto-discovered — there is no registry file to edit. Every concrete `BaseParser` subclass found anywhere under `icarus/parsers/` is registered automatically at import time, including local-only parsers dropped into the gitignored `icarus/parsers/private/` package. An installed distribution can instead advertise a parser through the `icarus.parsers` entry-point group. A parser's manifest is its sibling `<module>.yaml`, when one is present. Discovery and manifest-load failures are logged, never silently swallowed.
 
 A working example is in [`examples/custom_parser.py`](examples/custom_parser.py). The full parser development guide is in [about/PARSERS.md](about/PARSERS.md).
 
@@ -335,7 +341,7 @@ icarus-framework/
 │   └── integrations/
 │       ├── hygeia.py             PII sanitization
 │       └── stix_export.py        STIX 2.1 export
-├── tests/                        99 tests
+├── tests/                        163 tests
 ├── examples/                     Custom parser template
 ├── schema/                       Standalone SQL reference
 ├── about/                        Architecture and parser docs
@@ -365,6 +371,19 @@ icarus-framework/
 ---
 
 ## Changelog
+
+### v1.3.0 (2026-07-03) — Parser auto-discovery + production-audit backlog closure
+
+Two remediations, both grounded in [docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md): the hardcoded parser registry is gone, and the bulk of the open audit backlog is closed.
+
+- **Parser discovery** — the hardcoded `_ALL_PARSERS` list (which named four never-shipped modules and silently swallowed every import/manifest error) is replaced by directory + entry-point auto-discovery. Every concrete `BaseParser` subclass under `icarus/parsers/` is registered automatically, including local-only parsers in the gitignored `icarus/parsers/private/` package, plus anything an installed distribution advertises via the `icarus.parsers` entry-point group. The engine references no parser by name; discovery/manifest failures are logged, not swallowed.
+- **Diff/query correctness** — `changed_entities()` is NULL-safe (`IS NOT` instead of `!=`); `entitlement_diff` compares on a natural key (bundle ID + entitlement key/value) instead of a meaningless cross-database autoincrement ID; `structural_diff`'s three join types dedupe ambiguous keys (`HAVING COUNT(*) = 1`) so duplicates can no longer Cartesian-product into false "moved/reassigned" rows; CloudTrail observation dedup now keys on the unique `eventID` instead of second-granularity timestamps.
+- **Untrusted-input hardening** — a shared `open_db()` helper enforces `PRAGMA foreign_keys = ON` and RAM-scaled cache/mmap pragmas on every working connection (previously only a one-shot, immediately-closed connection got them); the differ and the generic SQLite parser now open untrusted source databases read-only and immutable (`mode=ro&immutable=1` — no `-wal`/`-shm`, no recovery) and always close them, including on `DatabaseError`; the `deploy_scripts` parser's regexes are length-bounded so a missing terminator can no longer backtrack to end-of-file (ReDoS); HYGEIA's fallback sanitizer streams rows instead of `fetchall()`-ing whole tables, and quotes every identifier pulled from `sqlite_master` instead of interpolating it raw.
+- **STIX** — SDOs now carry the spec-required `created`/`modified` timestamps, observed-data SDOs carry valid `object_refs`, and `diff_to_stix` emits all four diff categories (previously `changed`/`structural` were silently dropped).
+- **Resolver honesty** — `EntityResolver` is explicit about being an experimental, unwired subsystem: it now requires `experimental=True` (or emits a warning), the unused `threshold` parameter and dead `BlockingIndex` class are gone, and its docstring accurately describes exact-key blocking instead of a "block → score → cluster → merge" pipeline it never ran. The pipeline's checkpoint DB is now cleared after a fully successful run, so re-running a build no longer silently no-ops.
+- **Public API** — `icarus/__init__.py` now curates a real public surface via `__all__` (`Pipeline`, `create_default_pipeline`, `IcarusQuery`, `BaseParser`, `initialize_database`), and the parser-authoring docs/example show the real auto-discovery registration path instead of a recipe that no longer existed.
+- **Security/lint** — Bandit's B608 (SQL-injection) check is no longer blanket-skipped; genuinely-safe f-string SQL call sites each carry a targeted `# nosec B608` with a one-line justification instead.
+- **Quality** — 163 tests (up from 99), ruff + mypy + bandit clean. See [docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md) for the full finding-by-finding status.
 
 ### v1.2.0 (2026-07-02) — iOS/macOS attack-surface mapping + production hardening
 
