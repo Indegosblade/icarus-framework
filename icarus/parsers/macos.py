@@ -410,7 +410,7 @@ class MacosParser(BaseParser):
                           "entitlements", "kexts", "frameworks", "sandbox_profiles"):
                 try:
                     stats[table] = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
+                        f"SELECT COUNT(*) FROM {table}"  # nosec B608 - table iterates the hardcoded tuple literal above, not external input
                     ).fetchone()[0]
                 except sqlite3.OperationalError:
                     stats[table] = 0

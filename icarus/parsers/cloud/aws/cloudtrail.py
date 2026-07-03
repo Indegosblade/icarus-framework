@@ -123,8 +123,11 @@ class CloudTrailParser(BaseParser):
         event_time = record.get("eventTime", "")
         event_name = record.get("eventName", "")
         event_source = record.get("eventSource", "")
+        event_id = record.get("eventID", "")
 
         props = {}
+        if event_id:
+            props["eventID"] = event_id
         for key in ("sourceIPAddress", "awsRegion", "errorCode", "errorMessage"):
             val = record.get(key)
             if val:
@@ -136,12 +139,31 @@ class CloudTrailParser(BaseParser):
         if isinstance(resp, dict):
             props["responseElements"] = resp
 
-        existing = conn.execute(
-            "SELECT id FROM observations "
+        # Dedup key must include eventID: eventTime has only one-second
+        # granularity, and eventName repeats across calls, so two genuinely
+        # distinct CloudTrail events for the same identity in the same
+        # second would otherwise collapse into a single stored observation.
+        # eventID is unique per CloudTrail event, so it is compared against
+        # any prior observation's stored properties (there is no dedicated
+        # column for it) rather than added to the SQL WHERE clause.
+        candidates = conn.execute(
+            "SELECT properties FROM observations "
             "WHERE entity_table=? AND entity_id=? AND observed_at=? AND event_type=?",
             ("daemons", daemon_row[0], event_time, event_name),
-        ).fetchone()
-        if not existing:
+        ).fetchall()
+        duplicate = False
+        for (existing_props,) in candidates:
+            existing_event_id = ""
+            if existing_props:
+                try:
+                    existing_event_id = json.loads(existing_props).get("eventID", "")
+                except (json.JSONDecodeError, AttributeError):
+                    existing_event_id = ""
+            if existing_event_id == event_id:
+                duplicate = True
+                break
+
+        if not duplicate:
             conn.execute(
                 "INSERT INTO observations "
                 "(entity_table,entity_id,observed_at,event_type,observer,"

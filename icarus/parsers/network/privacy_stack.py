@@ -322,71 +322,77 @@ class PrivacyStackParser(BaseParser):
 
             # ── Phase 3: Insert observations ─────────────────────────
             # We attach observations to a synthetic "project" file entry
+            # (CLAUDE.md or HANDOFF.md). If neither is present in the source
+            # tree there is no valid anchor entity: skip this whole batch
+            # rather than pointing observations at an arbitrary files.id=1
+            # row that may belong to an unrelated file.
             project_row = conn.execute(
                 "SELECT id FROM files WHERE path=? OR path=?",
                 ("/CLAUDE.md", "/HANDOFF.md"),
             ).fetchone()
-            anchor_table = "files"
-            anchor_id = project_row[0] if project_row else 1
 
-            # IP addresses
-            for ip_info in sorted(found_ips):
-                existing = conn.execute(
-                    "SELECT id FROM observations WHERE entity_table=? "
-                    "AND entity_id=? AND event_type=? AND properties=?",
-                    (anchor_table, anchor_id, "ip_address", ip_info),
-                ).fetchone()
-                if not existing:
-                    conn.execute(
-                        "INSERT INTO observations "
-                        "(entity_table,entity_id,observed_at,observer,"
-                        "event_type,properties,confidence) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (anchor_table, anchor_id, now,
-                         "network/privacy_stack", "ip_address",
-                         ip_info, 0.90),
-                    )
-                    stats["observations"] += 1
+            if project_row is not None:
+                anchor_table = "files"
+                anchor_id = project_row[0]
 
-            # Credentials
-            for cred_info in sorted(found_credentials):
-                existing = conn.execute(
-                    "SELECT id FROM observations WHERE entity_table=? "
-                    "AND entity_id=? AND event_type=? AND properties=?",
-                    (anchor_table, anchor_id, "credential_found", cred_info),
-                ).fetchone()
-                if not existing:
-                    conn.execute(
-                        "INSERT INTO observations "
-                        "(entity_table,entity_id,observed_at,observer,"
-                        "event_type,properties,confidence) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (anchor_table, anchor_id, now,
-                         "network/privacy_stack", "credential_found",
-                         cred_info, 0.95),
-                    )
-                    stats["observations"] += 1
+                # IP addresses
+                for ip_info in sorted(found_ips):
+                    existing = conn.execute(
+                        "SELECT id FROM observations WHERE entity_table=? "
+                        "AND entity_id=? AND event_type=? AND properties=?",
+                        (anchor_table, anchor_id, "ip_address", ip_info),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO observations "
+                            "(entity_table,entity_id,observed_at,observer,"
+                            "event_type,properties,confidence) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (anchor_table, anchor_id, now,
+                             "network/privacy_stack", "ip_address",
+                             ip_info, 0.90),
+                        )
+                        stats["observations"] += 1
 
-            # Endpoints (WireGuard, DNS upstreams)
-            for ep_info in sorted(found_endpoints):
-                existing = conn.execute(
-                    "SELECT id FROM observations WHERE entity_table=? "
-                    "AND entity_id=? AND event_type=? AND properties=?",
-                    (anchor_table, anchor_id, "endpoint", ep_info),
-                ).fetchone()
-                if not existing:
-                    conn.execute(
-                        "INSERT INTO observations "
-                        "(entity_table,entity_id,observed_at,observer,"
-                        "event_type,properties,confidence) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (anchor_table, anchor_id, now,
-                         "network/privacy_stack", "endpoint",
-                         ep_info, 0.85),
-                    )
-                    stats["observations"] += 1
+                # Credentials
+                for cred_info in sorted(found_credentials):
+                    existing = conn.execute(
+                        "SELECT id FROM observations WHERE entity_table=? "
+                        "AND entity_id=? AND event_type=? AND properties=?",
+                        (anchor_table, anchor_id, "credential_found", cred_info),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO observations "
+                            "(entity_table,entity_id,observed_at,observer,"
+                            "event_type,properties,confidence) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (anchor_table, anchor_id, now,
+                             "network/privacy_stack", "credential_found",
+                             cred_info, 0.95),
+                        )
+                        stats["observations"] += 1
 
-            conn.commit()
+                # Endpoints (WireGuard, DNS upstreams)
+                for ep_info in sorted(found_endpoints):
+                    existing = conn.execute(
+                        "SELECT id FROM observations WHERE entity_table=? "
+                        "AND entity_id=? AND event_type=? AND properties=?",
+                        (anchor_table, anchor_id, "endpoint", ep_info),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO observations "
+                            "(entity_table,entity_id,observed_at,observer,"
+                            "event_type,properties,confidence) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (anchor_table, anchor_id, now,
+                             "network/privacy_stack", "endpoint",
+                             ep_info, 0.85),
+                        )
+                        stats["observations"] += 1
+
+                conn.commit()
 
             # ── Phase 4: Insert frameworks (blocklists + packages) ───
             for url in sorted(found_blocklists):
@@ -466,8 +472,10 @@ class PrivacyStackParser(BaseParser):
             for table in ("files", "daemons", "entitlements",
                           "observations", "frameworks"):
                 try:
+                    # `table` iterates the hardcoded literal tuple above, never
+                    # external/DB-sourced input, so there is no injectable value.
                     count = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
+                        f"SELECT COUNT(*) FROM {table}"  # nosec B608
                     ).fetchone()[0]
                     stats[table] = count
                 except sqlite3.OperationalError:

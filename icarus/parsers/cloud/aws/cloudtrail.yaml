@@ -17,8 +17,13 @@ consumes:
   - "application/json"
 produces:
   entity_types: ["files", "daemons", "observations"]
-  # event_type stores the raw AWS eventName; these are representative examples.
-  event_types: ["ConsoleLogin", "CreateUser", "AssumeRole", "DescribeInstances"]
+  # event_type stores the raw AWS eventName. This list must cover every
+  # eventName the parser can legitimately emit, including all eventNames
+  # exercised by tests/fixtures/cloud_aws_cloudtrail/ — ParserTestHarness
+  # .test_schema_conformance fails the build if an observation's event_type
+  # is not a member of this set.
+  event_types: ["ConsoleLogin", "CreateUser", "AssumeRole", "DescribeInstances",
+                "GetBucketPolicy", "ListFunctions", "DescribeSecurityGroups"]
 dependencies:
   tools: []
   python: []

@@ -6,9 +6,35 @@ attributes, FTS5 full-text search, and materialized views.
 """
 
 import platform
+import re
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
+
+
+def _windows_memory_status() -> Optional[tuple]:
+    """Return (total_bytes, available_bytes) on Windows, or None on failure."""
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(stat)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+        return stat.ullTotalPhys, stat.ullAvailPhys
+    except Exception:
+        return None
 
 
 def _get_system_ram_bytes() -> int:
@@ -25,23 +51,41 @@ def _get_system_ram_bytes() -> int:
             out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
             return int(out.strip())
         elif system == "Windows":
-            import ctypes
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(stat)
-            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-            return stat.ullTotalPhys
+            status = _windows_memory_status()
+            if status:
+                return status[0]
+    except Exception:
+        pass
+    return 0
+
+
+def _get_available_ram_bytes() -> int:
+    """Detect currently available (not total) system RAM. Returns bytes, or 0 on failure."""
+    try:
+        system = platform.system()
+        if system == "Linux":
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) * 1024
+        elif system == "Darwin":
+            import subprocess
+            out = subprocess.check_output(["vm_stat"], text=True)
+            page_size = 4096
+            size_match = re.search(r"page size of (\d+) bytes", out)
+            if size_match:
+                page_size = int(size_match.group(1))
+            free_pages = 0
+            for label in ("Pages free", "Pages inactive"):
+                count_match = re.search(rf"{re.escape(label)}:\s+(\d+)\.", out)
+                if count_match:
+                    free_pages += int(count_match.group(1))
+            if free_pages:
+                return free_pages * page_size
+        elif system == "Windows":
+            status = _windows_memory_status()
+            if status:
+                return status[1]
     except Exception:
         pass
     return 0
@@ -53,16 +97,54 @@ FALLBACK_MMAP_BYTES = 8_589_934_592
 
 
 def _apply_performance_pragmas(conn: sqlite3.Connection) -> None:
-    """Set SQLite cache and mmap based on system RAM."""
-    ram = _get_system_ram_bytes()
+    """Set SQLite cache and mmap based on available system RAM.
+
+    Scales to *available* (not total) RAM so the pragmas don't oversubscribe
+    a machine that is already under memory pressure, and caps the result at
+    the same ceiling used as the no-RAM-detected fallback below, so a huge
+    box doesn't get an unbounded cache/mmap allocation either.
+    """
+    ram = _get_available_ram_bytes()
     if ram > 0:
-        target = int(ram * RAM_TARGET_RATIO)
-        cache_kb = target // 1024
+        target = min(int(ram * RAM_TARGET_RATIO), FALLBACK_MMAP_BYTES)
+        cache_kb = min(target // 1024, FALLBACK_CACHE_KB)
         conn.execute(f"PRAGMA cache_size = -{cache_kb}")
         conn.execute(f"PRAGMA mmap_size = {target}")
     else:
         conn.execute(f"PRAGMA cache_size = -{FALLBACK_CACHE_KB}")
         conn.execute(f"PRAGMA mmap_size = {FALLBACK_MMAP_BYTES}")
+
+
+def open_db(path: Union[str, Path], *, readonly: bool = False) -> sqlite3.Connection:
+    """
+    Open a SQLite connection with durable, safe per-connection state applied
+    immediately. This is the one place core/parser code should go through
+    instead of a bare ``sqlite3.connect()``.
+
+    ``foreign_keys`` and cache/mmap sizing are per-connection settings in
+    SQLite — they do NOT carry over from one connection to the next (unlike
+    the schema itself). Previously ``PRAGMA foreign_keys = ON`` only ran
+    inside CORE_SCHEMA, on the one-shot connection used for a fresh
+    ``initialize_database()`` call that is closed immediately after, so
+    every other connection (parsers, the query engine, the resolver, the
+    pipeline) silently got SQLite's default of foreign_keys OFF and
+    unenforced ``REFERENCES``. Route connections through here so that FK
+    constraints are actually enforced and cache/mmap pragmas scale to
+    available RAM on every working connection, not just a connection that's
+    about to be closed.
+
+    Pass ``readonly=True`` to open the database immutably via URI (no
+    writes, no -wal/-shm side files created) for untrusted or read-only use.
+    """
+    if readonly:
+        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    else:
+        conn = sqlite3.connect(str(path))
+        conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    _apply_performance_pragmas(conn)
+    return conn
+
 
 SCHEMA_VERSION = 5
 
@@ -557,7 +639,7 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
     Creates a fresh v5 database, or migrates an existing v2/v3/v4 database
     forward. Returns stats dict with table count and schema version.
     """
-    conn = sqlite3.connect(str(db_path))
+    conn = open_db(db_path)
     try:
         existing_version = None
         try:
@@ -584,8 +666,6 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
             conn.executescript(FTS_SCHEMA)
             conn.executescript(FTS_TRIGGERS)
             conn.executescript(VIEWS)
-
-        _apply_performance_pragmas(conn)
 
         conn.execute(
             "INSERT OR REPLACE INTO metadata VALUES (?, ?)",

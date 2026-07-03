@@ -84,7 +84,7 @@ class BaseParser(ABC):
             stats = {}
             for t in tables:
                 try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]  # nosec B608 - t iterates the hardcoded ["files", "binaries"] literal above, not external input
                     stats[t] = count
                 except sqlite3.OperationalError:
                     stats[t] = 0

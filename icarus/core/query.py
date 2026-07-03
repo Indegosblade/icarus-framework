@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from icarus.core import VALID_FTS_TABLES, VALID_TABLES
+from icarus.core.schema import open_db
 
 QUERY_DISPLAY_LIMIT = 100
 FTS_RESULT_LIMIT = 100
@@ -68,7 +69,10 @@ class IcarusQuery:
         self.db_path = Path(db_path)
         if not self.db_path.exists():
             raise FileNotFoundError(f"Database not found: {db_path}")
-        self.conn = sqlite3.connect(str(self.db_path))
+        # open_db() enables foreign_keys enforcement and scales cache/mmap
+        # pragmas to available RAM on this long-lived working connection
+        # (see icarus.core.schema.open_db).
+        self.conn = open_db(self.db_path)
         self.conn.row_factory = sqlite3.Row
 
     def execute(self, sql: str, params: tuple = ()) -> QueryResult:
@@ -83,11 +87,11 @@ class IcarusQuery:
         if table not in VALID_FTS_TABLES:
             raise ValueError(f"Invalid FTS table: {table!r}")
         fts_table = f"{table}_fts"
-        sql = f"""
-            SELECT * FROM {table}
-            WHERE id IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?)
-            LIMIT {FTS_RESULT_LIMIT}
-        """
+        sql = (
+            f"SELECT * FROM {table} "  # nosec B608 - table checked against VALID_FTS_TABLES allowlist above; fts_table derived from it; FTS_RESULT_LIMIT is a module constant
+            f"WHERE id IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?) "
+            f"LIMIT {FTS_RESULT_LIMIT}"
+        )
         return self.execute(sql, (query,))
 
     def root_daemons(self) -> QueryResult:
@@ -116,14 +120,15 @@ class IcarusQuery:
             result.query_name = "Privileged Entitlements"
             return result
         placeholders = ",".join(["?"] * len(keys))
-        result = self.execute(f"""
-            SELECT e.key, e.value, b.bundle_id, f.path
-            FROM entitlements e
-            JOIN binaries b ON e.binary_id = b.id
-            JOIN files f ON b.file_id = f.id
-            WHERE e.key IN ({placeholders})
-            ORDER BY e.key, b.bundle_id
-        """, tuple(keys))
+        result = self.execute(
+            f"SELECT e.key, e.value, b.bundle_id, f.path "  # nosec B608 - only bare `?` placeholders interpolated; values passed bound as params below
+            f"FROM entitlements e "
+            f"JOIN binaries b ON e.binary_id = b.id "
+            f"JOIN files f ON b.file_id = f.id "
+            f"WHERE e.key IN ({placeholders}) "
+            f"ORDER BY e.key, b.bundle_id",
+            tuple(keys),
+        )
         result.query_name = "Privileged Entitlements"
         return result
 
@@ -235,7 +240,7 @@ class IcarusQuery:
         if ontology_table not in VALID_TABLES:
             raise ValueError(f"Invalid table: {ontology_table!r}")
         sql = (
-            f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "
+            f"SELECT o.*, obs.observed_at, obs.event_type, obs.observer "  # nosec B608 - ontology_table checked against VALID_TABLES allowlist above; only bound ? params follow
             f"FROM [{ontology_table}] o "
             f"JOIN observations obs ON obs.entity_table = ? AND obs.entity_id = o.id "
         )
@@ -273,7 +278,7 @@ class IcarusQuery:
         counts = {}
         for table in sorted(VALID_TABLES - {"metadata", "versions"}):
             try:
-                row = self.conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()
+                row = self.conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()  # nosec B608 - table drawn from the VALID_TABLES allowlist itself (loop var), not external input
                 counts[table] = row[0]
             except sqlite3.OperationalError:
                 counts[table] = 0

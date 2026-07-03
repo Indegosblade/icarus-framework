@@ -19,7 +19,7 @@ dependencies = [
     "jsonschema>=4.20",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
@@ -61,12 +61,25 @@ warn_unused_configs = true
 ignore_missing_imports = true
 disallow_untyped_defs = false
 check_untyped_defs = false
-no_implicit_optional = false
-disable_error_code = ["operator", "attr-defined", "var-annotated", "index", "assignment"]
+no_implicit_optional = true
+# Pared to the codes that currently fire on pre-existing (untyped-def) code
+# outside this pass's scope: operator/index/attr-defined in hygeia.py and
+# schema.py's Windows-only ctypes.windll access, var-annotated in
+# resolver.py/pipeline.py collection literals. "assignment" was dropped —
+# a full run with disable_error_code=[] surfaces zero [assignment] errors,
+# so it was suppressing nothing.
+disable_error_code = ["operator", "attr-defined", "var-annotated", "index"]
 
 [tool.bandit]
 exclude_dirs = ["tests"]
-skips = ["B101", "B110", "B112", "B404", "B603", "B607", "B608"]
+# B608 (SQL injection via string-built queries) is intentionally NOT skipped:
+# this codebase builds SQL with f-strings pervasively and B608 is the exact
+# bug class it is prone to. Genuinely-safe call sites get a targeted
+# `# nosec B608` with a one-line justification instead of a blanket skip.
+skips = ["B101", "B110", "B112", "B404", "B603", "B607"]
 
 [tool.setuptools.packages.find]
 include = ["icarus*"]
+
+[tool.setuptools.package-data]
+icarus = ["py.typed"]

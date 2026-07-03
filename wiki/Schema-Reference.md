@@ -100,12 +100,13 @@ Pipeline run provenance. One row per `icarus build` execution.
 | Column | Type | Notes |
 |--------|------|-------|
 | id | INTEGER | Primary key |
-| uuid | TEXT | Unique run identifier |
+| run_id | TEXT | Unique run identifier |
 | parser_name | TEXT | Parser used |
 | source_path | TEXT | Source directory |
-| created_at | TEXT | Run start timestamp |
+| started_at | TEXT | Run start timestamp |
 | completed_at | TEXT | Run completion timestamp |
 | entity_count | INTEGER | Total entities ingested |
+| metadata | TEXT | Optional free-form JSON metadata for the run |
 
 ## Event Tables
 

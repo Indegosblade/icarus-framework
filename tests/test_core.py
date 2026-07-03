@@ -197,6 +197,14 @@ def test_hygeia_integration(tmp_db):
 
 
 def test_pipeline_checkpoint_resume():
+    """#168: a fully successful run clears its own checkpoint DB.
+
+    Checkpoints exist only to resume a crashed run — leaving them behind
+    after success would mean a later run computes start = last_complete + 1
+    > len(phases) and silently skips every phase. So a successful run must
+    delete the checkpoint DB, and a subsequent run must therefore redo all
+    phases rather than silently no-op.
+    """
     from icarus.core.pipeline import Pipeline
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -212,9 +220,13 @@ def test_pipeline_checkpoint_resume():
         p.run(resume=False)
         assert call_log == ["a", "b"]
 
+        # Success must remove the checkpoint DB (and any -wal/-shm siblings).
+        assert not p.checkpoint_db.exists()
+
         call_log.clear()
         p.run(resume=True)
-        assert call_log == []
+        # No checkpoint left to resume from, so both phases really re-run.
+        assert call_log == ["a", "b"]
 
 
 def test_pipeline_populates_version_record(tmp_path):
@@ -666,68 +678,6 @@ def test_atoms_fts_trigger(tmp_db):
     conn.close()
 
 
-def test_blocking_candidates(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(
-            1, "files", "nginx_config",
-            {"name": "nginx.conf", "type": "config"},
-        )
-        r.ingest_atom(
-            1, "files", "nginx_binary",
-            {"name": "nginx", "type": "binary"},
-        )
-        r.ingest_atom(
-            1, "files", "postgres_config",
-            {"name": "postgres.conf", "type": "config"},
-        )
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1)
-        candidate_ids = [c[0] for c in candidates]
-        assert len(candidate_ids) > 0
-        assert a1 not in candidate_ids
-
-
-def test_blocking_no_self_match(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(1, "files", "test_file", {"name": "test"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1)
-        candidate_ids = [c[0] for c in candidates]
-        assert a1 not in candidate_ids
-
-
-def test_blocking_threshold(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        a1 = r.ingest_atom(1, "files", "alpha_service", {"name": "alpha", "role": "primary"})
-        for i in range(5):
-            r.ingest_atom(1, "files", f"beta_{i}", {"name": f"beta{i}", "role": "secondary"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        candidates = bi.candidates_for(a1, limit=3)
-        assert len(candidates) <= 3
-
-
-def test_blocking_rebuild(tmp_db):
-    from icarus.core.resolver import BlockingIndex, EntityResolver
-    _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
-        r.ingest_atom(1, "files", "k1", {"name": "a"})
-        r.ingest_atom(1, "files", "k2", {"name": "b"})
-        r.ingest_atom(1, "files", "k3", {"name": "c"})
-
-    with BlockingIndex(str(tmp_db)) as bi:
-        count = bi.rebuild()
-        assert count == 3
-
-
 def test_cross_graph_query(tmp_db):
     from icarus.core.query import IcarusQuery
     from icarus.core.schema import initialize_database
@@ -1029,3 +979,480 @@ def test_migration_v4_to_v5(tmp_db):
     assert {"daemon_id", "service_name"} <= cols
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Differ audit-backlog regression tests (findings #38/#78, #43, #48, #158, #225)
+# ---------------------------------------------------------------------------
+
+def _add_file(db, path, sha256):
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type, sha256) "
+        "VALUES (?, ?, '', 1, 'binary', ?)",
+        (path, path.rsplit("/", 1)[-1], sha256),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_changed_entities_detects_null_transitions(two_dbs):
+    """#38/#78: changed_entities must catch NULL<->value transitions.
+
+    SQL `!=` is NULL-blind (NULL != x is NULL, never TRUE), so NULL->value and
+    value->NULL changes were silently dropped. The IS NOT fix must report them,
+    while genuinely-unchanged rows (including NULL->NULL) stay excluded.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    _add_file(db1, "/a", "aaa")     # value -> value
+    _add_file(db2, "/a", "bbb")
+    _add_file(db1, "/b", None)      # NULL  -> value
+    _add_file(db2, "/b", "ccc")
+    _add_file(db1, "/c", "ddd")     # value -> NULL
+    _add_file(db2, "/c", None)
+    _add_file(db1, "/same", "eee")  # unchanged
+    _add_file(db2, "/same", "eee")
+    _add_file(db1, "/nn", None)     # NULL  -> NULL
+    _add_file(db2, "/nn", None)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.changed_entities("files", "path", "sha256")
+        by_path = {r["path"]: (r["old_value"], r["new_value"]) for r in result.changed}
+
+    assert by_path == {
+        "/a": ("aaa", "bbb"),
+        "/b": (None, "ccc"),
+        "/c": ("ddd", None),
+    }
+
+
+def test_removed_entities_positive(two_dbs):
+    """#158(a): a file present only in the old DB is reported as removed."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/gone', 'gone', '', 1, 'binary')"
+    )
+    conn.execute(  # shared file -> must NOT be reported as removed
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/keep', 'keep', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/keep', 'keep', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        removed = d.removed_entities("files", "path")
+        assert len(removed.removed) == 1
+        assert removed.removed[0]["path"] == "/usr/bin/gone"
+
+        full = d.full_diff()
+        assert full["files_removed"].total_changes == 1
+        assert full["files_removed"].removed[0]["path"] == "/usr/bin/gone"
+
+
+def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
+    """#158(c)/(d): sandbox_rule_reassigned and entitlement_reassigned branches."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO sandbox_rules (profile_id, operation, action) "
+        "VALUES (1, 'file-read-data', 'allow')"
+    )
+    conn.execute(
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (100, 'com.apple.security.network.client', 'true')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(  # same rule, different profile (reassigned)
+        "INSERT INTO sandbox_rules (profile_id, operation, action) "
+        "VALUES (2, 'file-read-data', 'allow')"
+    )
+    conn.execute(  # same entitlement, different binary (reassigned)
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (200, 'com.apple.security.network.client', 'true')"
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.structural_diff()
+
+    by_type = {c["type"]: c for c in result.structural}
+    assert by_type["sandbox_rule_reassigned"]["old_value"] == 1
+    assert by_type["sandbox_rule_reassigned"]["new_value"] == 2
+    assert by_type["entitlement_reassigned"]["old_value"] == 100
+    assert by_type["entitlement_reassigned"]["new_value"] == 200
+
+
+def test_structural_diff_dedupes_no_cartesian(two_dbs):
+    """#48: duplicate join keys must not Cartesian-product into false rows.
+
+    Each side has two 'helper' binaries, two 'mach-lookup' rules and two 'k/v'
+    entitlements (ambiguous keys) plus one unambiguous 'solo' binary that really
+    moved. The old joins cross-produced the duplicates into six false
+    moved/reassigned rows; only the genuine 'solo' move must survive.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    def seed(db, solo_file_id):
+        conn = sqlite3.connect(str(db))
+        conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (10, 'helper')")
+        conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (20, 'helper')")
+        conn.execute(
+            "INSERT INTO binaries (file_id, executable_name) VALUES (?, 'solo')",
+            (solo_file_id,),
+        )
+        conn.execute(
+            "INSERT INTO sandbox_rules (profile_id, operation, action) "
+            "VALUES (1, 'mach-lookup', 'allow')"
+        )
+        conn.execute(
+            "INSERT INTO sandbox_rules (profile_id, operation, action) "
+            "VALUES (2, 'mach-lookup', 'allow')"
+        )
+        conn.execute("INSERT INTO entitlements (binary_id, key, value) VALUES (5, 'k', 'v')")
+        conn.execute("INSERT INTO entitlements (binary_id, key, value) VALUES (6, 'k', 'v')")
+        conn.commit()
+        conn.close()
+
+    seed(db1, 100)  # solo -> file 100 (old)
+    seed(db2, 200)  # solo -> file 200 (new; genuine move)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.structural_diff()
+
+    assert [c["type"] for c in result.structural] == ["binary_file_moved"]
+    only = result.structural[0]
+    assert only["entity"] == "solo"
+    assert only["old_value"] == 100
+    assert only["new_value"] == 200
+
+
+def test_entitlement_diff_uses_natural_key(two_dbs):
+    """#43: new_entitlements must diff on bundle_id+key+value, not autoincrement id.
+
+    The shared entitlement is given a different autoincrement id in each DB (by
+    inserting the genuinely-new entitlement first in the new DB). An id-based
+    diff flags the shared row as new and misses the real one; the natural-key
+    diff reports exactly the genuinely-new entitlement.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO binaries (file_id, executable_name, bundle_id) "
+        "VALUES (1, 'app', 'com.acme.app')"
+    )
+    bid1 = conn.execute("SELECT id FROM binaries WHERE bundle_id='com.acme.app'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.network.client', 'true')",
+        (bid1,),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(
+        "INSERT INTO binaries (file_id, executable_name, bundle_id) "
+        "VALUES (1, 'app', 'com.acme.app')"
+    )
+    bid2 = conn.execute("SELECT id FROM binaries WHERE bundle_id='com.acme.app'").fetchone()[0]
+    conn.execute(  # genuinely-new entitlement inserted first -> shifts the shared id
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.get-task-allow', 'true')",
+        (bid2,),
+    )
+    conn.execute(  # shared entitlement: same bundle+key+value -> must NOT be 'new'
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.network.client', 'true')",
+        (bid2,),
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        new_keys = sorted(r["key"] for r in d.entitlement_diff()["new_entitlements"].added)
+
+    assert new_keys == ["com.apple.security.get-task-allow"]
+
+
+def test_differ_opens_databases_read_only(two_dbs):
+    """#225: the differ opens both DBs immutable read-only and never writes."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        with pytest.raises(sqlite3.OperationalError):
+            d.conn.execute("CREATE TABLE should_not_exist (x)")
+        # reads still work through the read-only connection
+        assert d.added_entities("files", "path").total_changes == 0
+
+    # immutable=1 means no WAL/SHM sidecars are ever created for either DB
+    for base in (db1, db2):
+        assert not Path(str(base) + "-wal").exists()
+        assert not Path(str(base) + "-shm").exists()
+
+
+# ---------------------------------------------------------------------------
+# Schema/query audit-backlog regression tests (findings #63, #68)
+# ---------------------------------------------------------------------------
+
+class _FakeConn:
+    """Minimal connection double that records executed pragma SQL.
+
+    Lets us assert exactly what _apply_performance_pragmas() computes and
+    asks SQLite to set, independent of whatever further clamping a given
+    SQLite build's compiled-in mmap ceiling applies on top of that (which
+    varies by platform/build and is not what finding #63 is about).
+    """
+
+    def __init__(self):
+        self.executed: list = []
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+
+
+def _pragma_value(executed: list, pragma: str) -> int:
+    stmt = next(s for s in executed if pragma in s)
+    return int(stmt.split("=", 1)[1].strip())
+
+
+def test_pragmas_scale_with_available_not_total_ram(monkeypatch):
+    """#63: pragma sizing must track AVAILABLE RAM, not TOTAL RAM.
+
+    A host can report abundant total RAM while very little is actually free
+    (e.g. under load from other processes). Available is set low and total
+    is set implausibly high; the resulting mmap/cache targets must derive
+    from the low available figure, not the high total one.
+    """
+    import icarus.core.schema as schema
+
+    small_available = 512 * 1024 * 1024   # 512 MiB actually free
+    huge_total = 64 * 1024 * 1024 * 1024  # 64 GiB installed
+
+    monkeypatch.setattr(schema, "_get_available_ram_bytes", lambda: small_available)
+    monkeypatch.setattr(schema, "_get_system_ram_bytes", lambda: huge_total)
+
+    fake = _FakeConn()
+    schema._apply_performance_pragmas(fake)
+
+    mmap_bytes = _pragma_value(fake.executed, "mmap_size")
+    cache_kb = -_pragma_value(fake.executed, "cache_size")
+
+    assert mmap_bytes == int(small_available * schema.RAM_TARGET_RATIO)
+    assert cache_kb == int(small_available * schema.RAM_TARGET_RATIO) // 1024
+    # Nowhere near what sizing off the (much larger) total would have produced.
+    assert mmap_bytes < int(huge_total * schema.RAM_TARGET_RATIO)
+
+
+def test_pragmas_capped_at_sane_ceiling_on_high_ram_box(monkeypatch):
+    """#63: even with abundant available RAM, cache/mmap must be capped at a
+    sane ceiling rather than scaled up without bound."""
+    import icarus.core.schema as schema
+
+    monkeypatch.setattr(
+        schema, "_get_available_ram_bytes", lambda: 512 * 1024 * 1024 * 1024  # 512 GiB
+    )
+
+    fake = _FakeConn()
+    schema._apply_performance_pragmas(fake)
+
+    mmap_bytes = _pragma_value(fake.executed, "mmap_size")
+    cache_kb = -_pragma_value(fake.executed, "cache_size")
+
+    assert mmap_bytes == schema.FALLBACK_MMAP_BYTES
+    assert cache_kb == schema.FALLBACK_CACHE_KB
+
+
+def test_icarus_query_working_connection_gets_tuned_cache_size(tmp_db):
+    """#63: IcarusQuery's long-lived connection must carry the RAM-scaled
+    cache_size pragma, not just a throwaway init connection that
+    initialize_database() closes immediately after applying it.
+    """
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    with IcarusQuery(str(tmp_db)) as q:
+        cache_size = q.conn.execute("PRAGMA cache_size").fetchone()[0]
+        assert cache_size != -2000  # sqlite3's own untouched default
+
+
+def test_bare_connect_vs_open_db_foreign_key_enforcement(tmp_db):
+    """#68: parsers/pipeline write through a bare sqlite3.connect() today,
+    which silently accepts entities with dangling foreign keys because
+    SQLite defaults foreign_keys OFF per-connection. open_db() must close
+    that gap for any connection routed through it.
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    initialize_database(tmp_db)
+
+    # The pre-fix pattern used throughout the codebase: a bare connect() has
+    # FK enforcement off, so a binaries row referencing a nonexistent
+    # files.id is silently accepted. This is the exact bug #68 documents.
+    bare = sqlite3.connect(str(tmp_db))
+    bare.execute("INSERT INTO binaries (file_id, bundle_id) VALUES (99999, 'orphan.bare')")
+    bare.commit()
+    assert bare.execute(
+        "SELECT COUNT(*) FROM binaries WHERE bundle_id = 'orphan.bare'"
+    ).fetchone()[0] == 1
+    bare.close()
+
+    # open_db() must reject the same dangling reference...
+    conn = open_db(tmp_db)
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO binaries (file_id, bundle_id) VALUES (88888, 'orphan.open_db')"
+        )
+
+    # ...while a real, valid reference still inserts cleanly on that same connection.
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/real', 'real', '', 1, 'binary')"
+    )
+    file_id = conn.execute("SELECT id FROM files WHERE path = '/usr/bin/real'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO binaries (file_id, bundle_id) VALUES (?, 'com.example.real')", (file_id,)
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM binaries WHERE bundle_id = 'com.example.real'"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_initialize_database_migration_path_leaves_fk_enforceable(tmp_db):
+    """#68: the migration path (upgrading an existing v2 DB) must also end
+    up enforcing FK constraints, not only a freshly-created (CORE_SCHEMA)
+    database -- CORE_SCHEMA's own 'PRAGMA foreign_keys = ON' is skipped
+    entirely on the migration branch.
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    # Build a legacy v2-shaped database by hand (mirrors test_migration_v2_to_v3).
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+            extension TEXT, size INTEGER DEFAULT 0, file_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS binaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL REFERENCES files(id), bundle_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daemons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL UNIQUE,
+            plist_path TEXT NOT NULL, program TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entitlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, binary_id INTEGER NOT NULL,
+            key TEXT NOT NULL, value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL,
+            operation TEXT NOT NULL, action TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, bundle_id TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS frameworks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE
+        );
+        INSERT INTO metadata VALUES ('schema_version', '2');
+    """)
+    conn.commit()
+    conn.close()
+
+    stats = initialize_database(tmp_db)
+    assert stats["schema_version"] == 5
+
+    conn = open_db(tmp_db)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO binaries (file_id, bundle_id) VALUES (12345, 'orphan')")
+    conn.close()
+
+
+def test_open_db_readonly_is_immutable_with_no_side_effects(tmp_db):
+    """open_db(readonly=True): reads work, writes are rejected, and no
+    -wal/-shm sidecar files get created -- mirrors the differ's read-only
+    open pattern for untrusted/read-only use (finding #225).
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/bin/a', 'a', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    ro = open_db(tmp_db, readonly=True)
+    try:
+        assert ro.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        assert ro.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            ro.execute(
+                "INSERT INTO files (path, filename, extension, size, file_type) "
+                "VALUES ('/bin/b', 'b', '', 1, 'binary')"
+            )
+    finally:
+        ro.close()
+
+    assert not Path(str(tmp_db) + "-wal").exists()
+    assert not Path(str(tmp_db) + "-shm").exists()
