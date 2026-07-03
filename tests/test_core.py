@@ -1286,3 +1286,223 @@ def test_differ_opens_databases_read_only(two_dbs):
     for base in (db1, db2):
         assert not Path(str(base) + "-wal").exists()
         assert not Path(str(base) + "-shm").exists()
+
+
+# ---------------------------------------------------------------------------
+# Schema/query audit-backlog regression tests (findings #63, #68)
+# ---------------------------------------------------------------------------
+
+class _FakeConn:
+    """Minimal connection double that records executed pragma SQL.
+
+    Lets us assert exactly what _apply_performance_pragmas() computes and
+    asks SQLite to set, independent of whatever further clamping a given
+    SQLite build's compiled-in mmap ceiling applies on top of that (which
+    varies by platform/build and is not what finding #63 is about).
+    """
+
+    def __init__(self):
+        self.executed: list = []
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+
+
+def _pragma_value(executed: list, pragma: str) -> int:
+    stmt = next(s for s in executed if pragma in s)
+    return int(stmt.split("=", 1)[1].strip())
+
+
+def test_pragmas_scale_with_available_not_total_ram(monkeypatch):
+    """#63: pragma sizing must track AVAILABLE RAM, not TOTAL RAM.
+
+    A host can report abundant total RAM while very little is actually free
+    (e.g. under load from other processes). Available is set low and total
+    is set implausibly high; the resulting mmap/cache targets must derive
+    from the low available figure, not the high total one.
+    """
+    import icarus.core.schema as schema
+
+    small_available = 512 * 1024 * 1024   # 512 MiB actually free
+    huge_total = 64 * 1024 * 1024 * 1024  # 64 GiB installed
+
+    monkeypatch.setattr(schema, "_get_available_ram_bytes", lambda: small_available)
+    monkeypatch.setattr(schema, "_get_system_ram_bytes", lambda: huge_total)
+
+    fake = _FakeConn()
+    schema._apply_performance_pragmas(fake)
+
+    mmap_bytes = _pragma_value(fake.executed, "mmap_size")
+    cache_kb = -_pragma_value(fake.executed, "cache_size")
+
+    assert mmap_bytes == int(small_available * schema.RAM_TARGET_RATIO)
+    assert cache_kb == int(small_available * schema.RAM_TARGET_RATIO) // 1024
+    # Nowhere near what sizing off the (much larger) total would have produced.
+    assert mmap_bytes < int(huge_total * schema.RAM_TARGET_RATIO)
+
+
+def test_pragmas_capped_at_sane_ceiling_on_high_ram_box(monkeypatch):
+    """#63: even with abundant available RAM, cache/mmap must be capped at a
+    sane ceiling rather than scaled up without bound."""
+    import icarus.core.schema as schema
+
+    monkeypatch.setattr(
+        schema, "_get_available_ram_bytes", lambda: 512 * 1024 * 1024 * 1024  # 512 GiB
+    )
+
+    fake = _FakeConn()
+    schema._apply_performance_pragmas(fake)
+
+    mmap_bytes = _pragma_value(fake.executed, "mmap_size")
+    cache_kb = -_pragma_value(fake.executed, "cache_size")
+
+    assert mmap_bytes == schema.FALLBACK_MMAP_BYTES
+    assert cache_kb == schema.FALLBACK_CACHE_KB
+
+
+def test_icarus_query_working_connection_gets_tuned_cache_size(tmp_db):
+    """#63: IcarusQuery's long-lived connection must carry the RAM-scaled
+    cache_size pragma, not just a throwaway init connection that
+    initialize_database() closes immediately after applying it.
+    """
+    from icarus.core.query import IcarusQuery
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    with IcarusQuery(str(tmp_db)) as q:
+        cache_size = q.conn.execute("PRAGMA cache_size").fetchone()[0]
+        assert cache_size != -2000  # sqlite3's own untouched default
+
+
+def test_bare_connect_vs_open_db_foreign_key_enforcement(tmp_db):
+    """#68: parsers/pipeline write through a bare sqlite3.connect() today,
+    which silently accepts entities with dangling foreign keys because
+    SQLite defaults foreign_keys OFF per-connection. open_db() must close
+    that gap for any connection routed through it.
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    initialize_database(tmp_db)
+
+    # The pre-fix pattern used throughout the codebase: a bare connect() has
+    # FK enforcement off, so a binaries row referencing a nonexistent
+    # files.id is silently accepted. This is the exact bug #68 documents.
+    bare = sqlite3.connect(str(tmp_db))
+    bare.execute("INSERT INTO binaries (file_id, bundle_id) VALUES (99999, 'orphan.bare')")
+    bare.commit()
+    assert bare.execute(
+        "SELECT COUNT(*) FROM binaries WHERE bundle_id = 'orphan.bare'"
+    ).fetchone()[0] == 1
+    bare.close()
+
+    # open_db() must reject the same dangling reference...
+    conn = open_db(tmp_db)
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO binaries (file_id, bundle_id) VALUES (88888, 'orphan.open_db')"
+        )
+
+    # ...while a real, valid reference still inserts cleanly on that same connection.
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/real', 'real', '', 1, 'binary')"
+    )
+    file_id = conn.execute("SELECT id FROM files WHERE path = '/usr/bin/real'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO binaries (file_id, bundle_id) VALUES (?, 'com.example.real')", (file_id,)
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM binaries WHERE bundle_id = 'com.example.real'"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_initialize_database_migration_path_leaves_fk_enforceable(tmp_db):
+    """#68: the migration path (upgrading an existing v2 DB) must also end
+    up enforcing FK constraints, not only a freshly-created (CORE_SCHEMA)
+    database -- CORE_SCHEMA's own 'PRAGMA foreign_keys = ON' is skipped
+    entirely on the migration branch.
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    # Build a legacy v2-shaped database by hand (mirrors test_migration_v2_to_v3).
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE, filename TEXT NOT NULL,
+            extension TEXT, size INTEGER DEFAULT 0, file_type TEXT
+        );
+        CREATE TABLE IF NOT EXISTS binaries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL REFERENCES files(id), bundle_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS daemons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL UNIQUE,
+            plist_path TEXT NOT NULL, program TEXT
+        );
+        CREATE TABLE IF NOT EXISTS entitlements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, binary_id INTEGER NOT NULL,
+            key TEXT NOT NULL, value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS sandbox_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL,
+            operation TEXT NOT NULL, action TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS kexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, bundle_id TEXT NOT NULL UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS frameworks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE
+        );
+        INSERT INTO metadata VALUES ('schema_version', '2');
+    """)
+    conn.commit()
+    conn.close()
+
+    stats = initialize_database(tmp_db)
+    assert stats["schema_version"] == 5
+
+    conn = open_db(tmp_db)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("INSERT INTO binaries (file_id, bundle_id) VALUES (12345, 'orphan')")
+    conn.close()
+
+
+def test_open_db_readonly_is_immutable_with_no_side_effects(tmp_db):
+    """open_db(readonly=True): reads work, writes are rejected, and no
+    -wal/-shm sidecar files get created -- mirrors the differ's read-only
+    open pattern for untrusted/read-only use (finding #225).
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/bin/a', 'a', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    ro = open_db(tmp_db, readonly=True)
+    try:
+        assert ro.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        assert ro.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            ro.execute(
+                "INSERT INTO files (path, filename, extension, size, file_type) "
+                "VALUES ('/bin/b', 'b', '', 1, 'binary')"
+            )
+    finally:
+        ro.close()
+
+    assert not Path(str(tmp_db) + "-wal").exists()
+    assert not Path(str(tmp_db) + "-shm").exists()

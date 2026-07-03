@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from icarus.core import VALID_FTS_TABLES, VALID_TABLES
+from icarus.core.schema import open_db
 
 QUERY_DISPLAY_LIMIT = 100
 FTS_RESULT_LIMIT = 100
@@ -68,7 +69,10 @@ class IcarusQuery:
         self.db_path = Path(db_path)
         if not self.db_path.exists():
             raise FileNotFoundError(f"Database not found: {db_path}")
-        self.conn = sqlite3.connect(str(self.db_path))
+        # open_db() enables foreign_keys enforcement and scales cache/mmap
+        # pragmas to available RAM on this long-lived working connection
+        # (see icarus.core.schema.open_db).
+        self.conn = open_db(self.db_path)
         self.conn.row_factory = sqlite3.Row
 
     def execute(self, sql: str, params: tuple = ()) -> QueryResult:
