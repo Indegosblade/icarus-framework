@@ -60,12 +60,5 @@ output/
 # Internal planning docs
 prompts/
 
-# Local-only parsers (not released)
-icarus/parsers/node_parser.py
-icarus/parsers/node_parser.yaml
-icarus/parsers/source_parser.py
-icarus/parsers/source_parser.yaml
-icarus/parsers/obsidian_parser.py
-icarus/parsers/obsidian_parser.yaml
-icarus/parsers/javascript_parser.py
-icarus/parsers/javascript_parser.yaml
+# Local-only parsers — auto-discovered at runtime, never tracked or published
+icarus/parsers/private/
