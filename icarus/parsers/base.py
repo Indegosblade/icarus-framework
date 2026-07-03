@@ -134,3 +134,34 @@ class BaseParser(ABC):
                 return f.read(len(magic)) == magic
         except (PermissionError, OSError):
             return False
+
+
+def link_daemons_to_binaries(conn: sqlite3.Connection) -> int:
+    """Populate ``daemons.binary_id`` by matching each daemon's ``program``
+    executable path to the ``binaries`` row for that file. Returns the number of
+    edges created. Does not commit — the caller owns the transaction.
+
+    This daemon -> binary edge is what makes the escape-surface views (which
+    JOIN ``daemons.binary_id = binaries.id``) non-empty; without it a daemon and
+    the binary it launches stay disconnected in the entity graph (finding #93).
+    Shared by every parser whose daemons record an executable path, so the
+    linking rule lives in exactly one place.
+    """
+    linked = 0
+    rows = conn.execute(
+        "SELECT id, program FROM daemons "
+        "WHERE program IS NOT NULL AND program != '' AND binary_id IS NULL"
+    ).fetchall()
+    for daemon_id, program in rows:
+        bin_row = conn.execute(
+            "SELECT b.id FROM binaries b JOIN files f ON b.file_id = f.id "
+            "WHERE f.path = ? LIMIT 1",
+            (program,),
+        ).fetchone()
+        if bin_row:
+            conn.execute(
+                "UPDATE daemons SET binary_id = ? WHERE id = ?",
+                (bin_row[0], daemon_id),
+            )
+            linked += 1
+    return linked
