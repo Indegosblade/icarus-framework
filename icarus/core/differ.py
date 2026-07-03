@@ -108,11 +108,11 @@ class IcarusDiffer:
         """Entities present in new DB but not in old DB."""
         table = validate_table(table)
         key = validate_column(key)
-        rows = self.conn.execute(f"""
-            SELECT n.* FROM main.[{table}] n
-            LEFT JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}]
-            WHERE o.[{key}] IS NULL
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT n.* FROM main.[{table}] n "  # nosec B608 - table/key validated via validate_table/validate_column above
+            f"LEFT JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}] "
+            f"WHERE o.[{key}] IS NULL"
+        ).fetchall()
 
         return DiffResult(
             added=[dict(r) for r in rows],
@@ -126,11 +126,11 @@ class IcarusDiffer:
         """Entities present in old DB but not in new DB."""
         table = validate_table(table)
         key = validate_column(key)
-        rows = self.conn.execute(f"""
-            SELECT o.* FROM old_db.[{table}] o
-            LEFT JOIN main.[{table}] n ON o.[{key}] = n.[{key}]
-            WHERE n.[{key}] IS NULL
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT o.* FROM old_db.[{table}] o "  # nosec B608 - table/key validated via validate_table/validate_column above
+            f"LEFT JOIN main.[{table}] n ON o.[{key}] = n.[{key}] "
+            f"WHERE n.[{key}] IS NULL"
+        ).fetchall()
 
         return DiffResult(
             added=[],
@@ -145,12 +145,12 @@ class IcarusDiffer:
         table = validate_table(table)
         key = validate_column(key)
         compare = validate_column(compare)
-        rows = self.conn.execute(f"""
-            SELECT n.[{key}], o.[{compare}] AS old_value, n.[{compare}] AS new_value
-            FROM main.[{table}] n
-            JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}]
-            WHERE n.[{compare}] IS NOT o.[{compare}]
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT n.[{key}], o.[{compare}] AS old_value, n.[{compare}] AS new_value "  # nosec B608 - table/key/compare validated via validate_table/validate_column above
+            f"FROM main.[{table}] n "
+            f"JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}] "
+            f"WHERE n.[{compare}] IS NOT o.[{compare}]"
+        ).fetchall()
 
         return DiffResult(
             added=[],
@@ -187,17 +187,18 @@ class IcarusDiffer:
 
         if dangerous_keys:
             placeholders = ",".join(["?"] * len(dangerous_keys))
-            rows = self.conn.execute(f"""
-                SELECT e.key, e.value, b.bundle_id
-                FROM main.entitlements e
-                JOIN main.binaries b ON e.binary_id = b.id
-                WHERE e.key IN ({placeholders})
-                AND e.key NOT IN (
-                    SELECT eo.key FROM old_db.entitlements eo
-                    JOIN old_db.binaries bo ON eo.binary_id = bo.id
-                    WHERE bo.bundle_id = b.bundle_id AND eo.key = e.key
-                )
-            """, tuple(dangerous_keys)).fetchall()
+            rows = self.conn.execute(
+                f"SELECT e.key, e.value, b.bundle_id "  # nosec B608 - only bare `?` placeholders interpolated; values passed bound as params below
+                f"FROM main.entitlements e "
+                f"JOIN main.binaries b ON e.binary_id = b.id "
+                f"WHERE e.key IN ({placeholders}) "
+                f"AND e.key NOT IN ( "
+                f"    SELECT eo.key FROM old_db.entitlements eo "
+                f"    JOIN old_db.binaries bo ON eo.binary_id = bo.id "
+                f"    WHERE bo.bundle_id = b.bundle_id AND eo.key = e.key "
+                f")",
+                tuple(dangerous_keys),
+            ).fetchall()
 
             results["new_dangerous"] = DiffResult(
                 added=[dict(r) for r in rows],

@@ -87,11 +87,11 @@ class IcarusQuery:
         if table not in VALID_FTS_TABLES:
             raise ValueError(f"Invalid FTS table: {table!r}")
         fts_table = f"{table}_fts"
-        sql = f"""
-            SELECT * FROM {table}
-            WHERE id IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?)
-            LIMIT {FTS_RESULT_LIMIT}
-        """
+        sql = (
+            f"SELECT * FROM {table} "  # nosec B608 - table checked against VALID_FTS_TABLES allowlist above; fts_table derived from it; FTS_RESULT_LIMIT is a module constant
+            f"WHERE id IN (SELECT rowid FROM {fts_table} WHERE {fts_table} MATCH ?) "
+            f"LIMIT {FTS_RESULT_LIMIT}"
+        )
         return self.execute(sql, (query,))
 
     def root_daemons(self) -> QueryResult:
@@ -120,14 +120,15 @@ class IcarusQuery:
             result.query_name = "Privileged Entitlements"
             return result
         placeholders = ",".join(["?"] * len(keys))
-        result = self.execute(f"""
-            SELECT e.key, e.value, b.bundle_id, f.path
-            FROM entitlements e
-            JOIN binaries b ON e.binary_id = b.id
-            JOIN files f ON b.file_id = f.id
-            WHERE e.key IN ({placeholders})
-            ORDER BY e.key, b.bundle_id
-        """, tuple(keys))
+        result = self.execute(
+            f"SELECT e.key, e.value, b.bundle_id, f.path "  # nosec B608 - only bare `?` placeholders interpolated; values passed bound as params below
+            f"FROM entitlements e "
+            f"JOIN binaries b ON e.binary_id = b.id "
+            f"JOIN files f ON b.file_id = f.id "
+            f"WHERE e.key IN ({placeholders}) "
+            f"ORDER BY e.key, b.bundle_id",
+            tuple(keys),
+        )
         result.query_name = "Privileged Entitlements"
         return result
 
