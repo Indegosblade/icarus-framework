@@ -42,11 +42,22 @@ FILE_TYPES = {
     ".sudoers": "sudoers",
 }
 
+# Upper bound on how much of a single script is scanned by the regex patterns
+# below. Deploy scripts are small; capping the analyzed text keeps the total
+# regex work bounded even for a pathological/adversarial input near the 2 MB
+# file-read ceiling (defense-in-depth alongside the per-pattern span caps).
+MAX_SCRIPT_ANALYZE_BYTES = 1_000_000
+
 # SSH connection pattern: c.connect('host', username='user', password='pass')
+# Spans are length-capped so a script missing the username=/password= sentinel
+# (or a missing closing quote) can't make the lazy `.` scan to end-of-file —
+# that unbounded DOTALL scan was quadratic across many .connect() calls (ReDoS).
+# re.S is kept because a connect() call may wrap across a line; the caps keep
+# each skip bounded to a real call's argument list.
 SSH_CONNECT_PATTERN = re.compile(
-    r"\.connect\(\s*['\"]([^'\"]+)['\"]"
-    r"(?:.*?username\s*=\s*['\"]([^'\"]+)['\"])?"
-    r"(?:.*?password\s*=\s*['\"]([^'\"]+)['\"])?",
+    r"\.connect\(\s*['\"]([^'\"]{1,256})['\"]"
+    r"(?:.{0,200}?username\s*=\s*['\"]([^'\"]{1,256})['\"])?"
+    r"(?:.{0,200}?password\s*=\s*['\"]([^'\"]{1,256})['\"])?",
     re.S,
 )
 
@@ -61,14 +72,18 @@ PASS_VAR_PATTERN = re.compile(
     r"^(?:PASS|pass|PASSWORD|SSH_PASS)\s*=\s*['\"]([^'\"]+)['\"]", re.M
 )
 
-# exec_command pattern — captures the command string
+# exec_command pattern — captures the command string.
+# The negated class `[^'\"]` already spans newlines, so re.S is unnecessary; the
+# {1,500} cap stops the capture at a bounded length instead of scanning to EOF
+# when the closing quote is missing (the old `(.+?)` + re.S was the ReDoS vector).
+# Commands are truncated to 200 chars downstream, so the 500 cap loses nothing.
 EXEC_CMD_PATTERN = re.compile(
-    r"\.exec_command\(\s*['\"](.+?)['\"]", re.S
+    r"\.exec_command\(\s*['\"]([^'\"]{1,500})['\"]"
 )
 # Also catch: exec_command(cmd, ...) where cmd is a variable set with cmd('...')
 # and the helper pattern: def cmd(s): ... exec_command(s)
 HELPER_CMD_PATTERN = re.compile(
-    r"(?:cmd|run|exec_cmd|execute)\(\s*['\"](.+?)['\"]", re.S
+    r"(?:cmd|run|exec_cmd|execute)\(\s*['\"]([^'\"]{1,500})['\"]"
 )
 
 # systemctl commands inside strings
@@ -458,7 +473,7 @@ class DeployScriptsParser(BaseParser):
             for table in ("files", "daemons", "observations", "entitlements"):
                 try:
                     count = conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
+                        f"SELECT COUNT(*) FROM {table}"  # nosec B608 - table iterates the hardcoded tuple literal above, not external input
                     ).fetchone()[0]
                     stats[table] = count
                 except sqlite3.OperationalError:
@@ -488,6 +503,12 @@ class DeployScriptsParser(BaseParser):
         entitlements_queue: List[Tuple[str, str, str, str]],
     ) -> None:
         """Deep-parse a single Python script for deploy patterns."""
+
+        # Pre-cap the analyzed text so the regex sweep below is bounded even for
+        # an adversarially large script (belt-and-suspenders with the per-pattern
+        # length caps that prevent backtracking to end-of-file).
+        if len(text) > MAX_SCRIPT_ANALYZE_BYTES:
+            text = text[:MAX_SCRIPT_ANALYZE_BYTES]
 
         # ── SSH connections ────────────────────────────────────────
         # Try explicit .connect() calls first

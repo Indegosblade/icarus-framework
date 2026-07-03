@@ -13,6 +13,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
 
+from icarus.core import validate_table
+
 try:
     from hygeia import sanitize_database, verify_database
     _HAS_HYGEIA_PACKAGE = True
@@ -28,6 +30,11 @@ PII_PATTERNS = [
     (r"/home/[^/]+", "username_path"),
     (r"C:\\Users\\[^\\]+", "username_path_win"),
 ]
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote a SQL identifier for safe interpolation, escaping embedded quotes."""
+    return '"' + name.replace('"', '""') + '"'
 
 
 def sanitize_output(db_path: Path) -> Dict[str, Any]:
@@ -49,11 +56,13 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
         text_columns = _get_text_columns(conn)
 
         for table, columns in text_columns.items():
-            rows = conn.execute(
-                f"SELECT rowid, {', '.join(columns)} FROM {table}"
-            ).fetchall()
+            quoted_table = _quote_ident(table)
+            select_list = ", ".join(_quote_ident(c) for c in columns)
+            cursor = conn.execute(
+                f"SELECT rowid, {select_list} FROM {quoted_table}"  # nosec B608 - quoted_table/select_list are identifiers escaped via _quote_ident(); table pre-validated against VALID_TABLES in _get_text_columns()
+            )
 
-            for row in rows:
+            for row in cursor:
                 rowid = row[0]
                 stats["checked_rows"] += 1
 
@@ -64,14 +73,15 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
 
                     cleaned, found = _redact_pii(value)
                     if found:
+                        quoted_col = _quote_ident(col)
                         try:
                             conn.execute(
-                                f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",  # nosec B608 - quoted_table/quoted_col escaped via _quote_ident(); values passed as bound ? params
                                 (cleaned, rowid)
                             )
                         except sqlite3.IntegrityError:
                             conn.execute(
-                                f"UPDATE {table} SET {col} = ? WHERE rowid = ?",
+                                f"UPDATE {quoted_table} SET {quoted_col} = ? WHERE rowid = ?",  # nosec B608 - quoted_table/quoted_col escaped via _quote_ident(); values passed as bound ? params
                                 (f"{cleaned}_{rowid}", rowid)
                             )
                         stats["redacted"] += 1
@@ -110,11 +120,13 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
         text_columns = _get_text_columns(conn)
 
         for table, columns in text_columns.items():
-            rows = conn.execute(
-                f"SELECT rowid, {', '.join(columns)} FROM {table}"
-            ).fetchall()
+            quoted_table = _quote_ident(table)
+            select_list = ", ".join(_quote_ident(c) for c in columns)
+            cursor = conn.execute(
+                f"SELECT rowid, {select_list} FROM {quoted_table}"  # nosec B608 - quoted_table/select_list are identifiers escaped via _quote_ident(); table pre-validated against VALID_TABLES in _get_text_columns()
+            )
 
-            for row in rows:
+            for row in cursor:
                 for i, col in enumerate(columns):
                     value = row[i + 1]
                     if not value or not isinstance(value, str):
@@ -162,8 +174,16 @@ def _get_text_columns(conn: sqlite3.Connection) -> Dict[str, List[str]]:
     for (table_name,) in tables:
         if table_name in skip_tables:
             continue
+        try:
+            validate_table(table_name)
+        except ValueError:
+            # Not a known ICARUS table (e.g. schema confusion via a crafted
+            # sqlite_master entry) — skip rather than interpolate it into SQL.
+            continue
 
-        columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        columns = conn.execute(
+            f"PRAGMA table_info({_quote_ident(table_name)})"
+        ).fetchall()
         text_cols = [col[1] for col in columns if col[2].upper() == "TEXT"]
 
         if text_cols:

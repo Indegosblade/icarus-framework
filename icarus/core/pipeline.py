@@ -66,21 +66,36 @@ class Pipeline:
         self.phases.append(PipelinePhase(name, handler, description))
 
     def get_last_checkpoint(self) -> int:
-        """Return the index of the last completed phase, or -1 if none."""
+        """Return the index of the last completed phase, or -1 if none.
+
+        A stored checkpoint is only honored when every completed phase still
+        matches the current pipeline definition at that index (same
+        phase_name). If the pipeline was redefined between runs — phases
+        renamed or reordered — the stored indices no longer line up, so
+        resuming by index would skip or mis-run phases; in that case the
+        checkpoint is discarded and the pipeline re-runs from scratch (-1).
+        """
         if not self.checkpoint_db.exists():
             return -1
         conn = sqlite3.connect(str(self.checkpoint_db))
         try:
-            row = conn.execute(
-                "SELECT MAX(phase_index) FROM checkpoints WHERE status = 'complete'"
-            ).fetchone()
-            return row[0] if row and row[0] is not None else -1
+            rows = conn.execute(
+                "SELECT phase_index, phase_name FROM checkpoints WHERE status = 'complete'"
+            ).fetchall()
         except sqlite3.OperationalError:
             return -1
         finally:
             conn.close()
 
-    def save_checkpoint(self, phase_index: int, status: str, stats: dict = None) -> None:
+        last = -1
+        for phase_index, phase_name in rows:
+            if phase_index >= len(self.phases) or self.phases[phase_index].name != phase_name:
+                return -1
+            if phase_index > last:
+                last = phase_index
+        return last
+
+    def save_checkpoint(self, phase_index: int, status: str, stats: Optional[dict] = None) -> None:
         """Persist phase completion status for resume-on-crash."""
         conn = sqlite3.connect(str(self.checkpoint_db))
         try:
@@ -101,6 +116,18 @@ class Pipeline:
             conn.commit()
         finally:
             conn.close()
+
+    def _clear_checkpoint(self) -> None:
+        """Delete the checkpoint DB after a fully successful run.
+
+        Checkpoints exist only to resume a crashed run. Leaving them after
+        success marks every phase 'complete', so a later build to the same
+        output would compute start = last + 1 > len(phases) and silently skip
+        every phase (a no-op). Removing the file forces a clean re-run.
+        """
+        base = str(self.checkpoint_db)
+        for suffix in ("", "-wal", "-shm"):
+            Path(base + suffix).unlink(missing_ok=True)
 
     def _create_version_record(self):
         """Record this pipeline run in the versions table.
@@ -200,6 +227,7 @@ class Pipeline:
                 raise
 
         self._finalize_version_record()
+        self._clear_checkpoint()
 
         total = time.time() - self.context.start_time
         print(f"\n[ICARUS] Pipeline complete. {len(self.phases)} phases in {total:.1f}s")
@@ -224,6 +252,10 @@ def create_default_pipeline(
     pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
     parser = get_parser(parser_name)
 
+    # NOTE: the atom/bag EntityResolver subsystem (icarus.core.resolver) is
+    # experimental and intentionally NOT wired in as a 'resolve' phase here.
+    # Use it only via the explicit EntityResolver(..., experimental=True) entry
+    # point until its API/behavior stabilize.
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
                        "Initialize SQLite database and schema")
     pipeline.add_phase("ingest", lambda ctx: parser.extract_entities(ctx.source, ctx.output_db),

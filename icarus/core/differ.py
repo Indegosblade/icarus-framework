@@ -89,10 +89,17 @@ class IcarusDiffer:
         if not self.new_path.exists():
             raise FileNotFoundError(f"New database not found: {new_db}")
 
-        self.conn = sqlite3.connect(str(self.new_path))
+        # Diff never writes: open both databases immutable read-only via URI so
+        # an untrusted export can never be mutated (and no -wal/-shm is created).
+        self.conn = sqlite3.connect(
+            f"file:{self.new_path}?mode=ro&immutable=1", uri=True
+        )
         try:
             self.conn.row_factory = sqlite3.Row
-            self.conn.execute("ATTACH DATABASE ? AS old_db", (str(self.old_path),))
+            self.conn.execute(
+                "ATTACH DATABASE ? AS old_db",
+                (f"file:{self.old_path}?mode=ro&immutable=1",),
+            )
         except Exception:
             self.conn.close()
             raise
@@ -101,11 +108,11 @@ class IcarusDiffer:
         """Entities present in new DB but not in old DB."""
         table = validate_table(table)
         key = validate_column(key)
-        rows = self.conn.execute(f"""
-            SELECT n.* FROM main.[{table}] n
-            LEFT JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}]
-            WHERE o.[{key}] IS NULL
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT n.* FROM main.[{table}] n "  # nosec B608 - table/key validated via validate_table/validate_column above
+            f"LEFT JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}] "
+            f"WHERE o.[{key}] IS NULL"
+        ).fetchall()
 
         return DiffResult(
             added=[dict(r) for r in rows],
@@ -119,11 +126,11 @@ class IcarusDiffer:
         """Entities present in old DB but not in new DB."""
         table = validate_table(table)
         key = validate_column(key)
-        rows = self.conn.execute(f"""
-            SELECT o.* FROM old_db.[{table}] o
-            LEFT JOIN main.[{table}] n ON o.[{key}] = n.[{key}]
-            WHERE n.[{key}] IS NULL
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT o.* FROM old_db.[{table}] o "  # nosec B608 - table/key validated via validate_table/validate_column above
+            f"LEFT JOIN main.[{table}] n ON o.[{key}] = n.[{key}] "
+            f"WHERE n.[{key}] IS NULL"
+        ).fetchall()
 
         return DiffResult(
             added=[],
@@ -138,12 +145,12 @@ class IcarusDiffer:
         table = validate_table(table)
         key = validate_column(key)
         compare = validate_column(compare)
-        rows = self.conn.execute(f"""
-            SELECT n.[{key}], o.[{compare}] AS old_value, n.[{compare}] AS new_value
-            FROM main.[{table}] n
-            JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}]
-            WHERE n.[{compare}] != o.[{compare}]
-        """).fetchall()
+        rows = self.conn.execute(
+            f"SELECT n.[{key}], o.[{compare}] AS old_value, n.[{compare}] AS new_value "  # nosec B608 - table/key/compare validated via validate_table/validate_column above
+            f"FROM main.[{table}] n "
+            f"JOIN old_db.[{table}] o ON n.[{key}] = o.[{key}] "
+            f"WHERE n.[{compare}] IS NOT o.[{compare}]"
+        ).fetchall()
 
         return DiffResult(
             added=[],
@@ -157,21 +164,41 @@ class IcarusDiffer:
         """Specialized entitlement comparison across versions."""
         results = {}
 
-        results["new_entitlements"] = self.added_entities("entitlements", "id")
+        # Diff on the natural key (owning binary's bundle_id + entitlement
+        # key/value), NOT the autoincrement id, which is assigned independently
+        # in each DB and so carries no cross-version meaning.
+        new_rows = self.conn.execute("""
+            SELECT e.key, e.value, b.bundle_id, e.binary_id
+            FROM main.entitlements e
+            JOIN main.binaries b ON e.binary_id = b.id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM old_db.entitlements eo
+                JOIN old_db.binaries bo ON eo.binary_id = bo.id
+                WHERE bo.bundle_id IS b.bundle_id
+                  AND eo.key = e.key
+                  AND eo.value = e.value
+            )
+        """).fetchall()
+        results["new_entitlements"] = DiffResult(
+            added=[dict(r) for r in new_rows],
+            removed=[], changed=[],
+            table="entitlements", key_column="key",
+        )
 
         if dangerous_keys:
             placeholders = ",".join(["?"] * len(dangerous_keys))
-            rows = self.conn.execute(f"""
-                SELECT e.key, e.value, b.bundle_id
-                FROM main.entitlements e
-                JOIN main.binaries b ON e.binary_id = b.id
-                WHERE e.key IN ({placeholders})
-                AND e.key NOT IN (
-                    SELECT eo.key FROM old_db.entitlements eo
-                    JOIN old_db.binaries bo ON eo.binary_id = bo.id
-                    WHERE bo.bundle_id = b.bundle_id AND eo.key = e.key
-                )
-            """, tuple(dangerous_keys)).fetchall()
+            rows = self.conn.execute(
+                f"SELECT e.key, e.value, b.bundle_id "  # nosec B608 - only bare `?` placeholders interpolated; values passed bound as params below
+                f"FROM main.entitlements e "
+                f"JOIN main.binaries b ON e.binary_id = b.id "
+                f"WHERE e.key IN ({placeholders}) "
+                f"AND e.key NOT IN ( "
+                f"    SELECT eo.key FROM old_db.entitlements eo "
+                f"    JOIN old_db.binaries bo ON eo.binary_id = bo.id "
+                f"    WHERE bo.bundle_id = b.bundle_id AND eo.key = e.key "
+                f")",
+                tuple(dangerous_keys),
+            ).fetchall()
 
             results["new_dangerous"] = DiffResult(
                 added=[dict(r) for r in rows],
@@ -191,12 +218,24 @@ class IcarusDiffer:
         """
         structural_changes = []
 
-        # Binaries whose parent file changed
+        # Binaries whose parent file changed.
+        # executable_name is not unique, so restrict to names that identify
+        # exactly one binary on each side; otherwise the join Cartesian-products
+        # duplicates into false "moved" rows. Ambiguous names are skipped.
         rows = self.conn.execute("""
-            SELECT n.id, n.executable_name, n.file_id AS new_file_id, o.file_id AS old_file_id
-            FROM main.binaries n
-            JOIN old_db.binaries o ON n.executable_name = o.executable_name
-            WHERE n.file_id != o.file_id
+            SELECT n.executable_name,
+                   n.file_id AS new_file_id, o.file_id AS old_file_id
+            FROM (
+                SELECT executable_name, file_id FROM main.binaries
+                WHERE executable_name IS NOT NULL
+                GROUP BY executable_name HAVING COUNT(*) = 1
+            ) n
+            JOIN (
+                SELECT executable_name, file_id FROM old_db.binaries
+                WHERE executable_name IS NOT NULL
+                GROUP BY executable_name HAVING COUNT(*) = 1
+            ) o ON n.executable_name = o.executable_name
+            WHERE n.file_id IS NOT o.file_id
         """).fetchall()
         for r in rows:
             r = dict(r)
@@ -209,13 +248,21 @@ class IcarusDiffer:
                                f"{r.get('old_file_id')} -> {r.get('new_file_id')}",
             })
 
-        # Sandbox rules whose profile assignment changed
+        # Sandbox rules whose profile assignment changed.
+        # (operation, action) is not unique; restrict to pairs identifying
+        # exactly one rule on each side so duplicates cannot cross-product.
         rows = self.conn.execute("""
-            SELECT n.id, n.operation, n.action, n.profile_id AS new_pid, o.profile_id AS old_pid
-            FROM main.sandbox_rules n
-            JOIN old_db.sandbox_rules o
-                ON n.operation = o.operation AND n.action = o.action
-            WHERE n.profile_id != o.profile_id
+            SELECT n.operation, n.action,
+                   n.profile_id AS new_pid, o.profile_id AS old_pid
+            FROM (
+                SELECT operation, action, profile_id FROM main.sandbox_rules
+                GROUP BY operation, action HAVING COUNT(*) = 1
+            ) n
+            JOIN (
+                SELECT operation, action, profile_id FROM old_db.sandbox_rules
+                GROUP BY operation, action HAVING COUNT(*) = 1
+            ) o ON n.operation = o.operation AND n.action = o.action
+            WHERE n.profile_id IS NOT o.profile_id
         """).fetchall()
         for r in rows:
             r = dict(r)
@@ -228,12 +275,22 @@ class IcarusDiffer:
                                f"profile: {r.get('old_pid')} -> {r.get('new_pid')}",
             })
 
-        # Entitlements whose binary assignment changed (same key+value, different binary)
+        # Entitlements whose binary assignment changed (same key+value,
+        # different binary). (key, value) is not unique; restrict to pairs
+        # identifying exactly one entitlement on each side so duplicates
+        # cannot cross-product into false "reassigned" rows.
         rows = self.conn.execute("""
-            SELECT n.key, n.value, n.binary_id AS new_bid, o.binary_id AS old_bid
-            FROM main.entitlements n
-            JOIN old_db.entitlements o ON n.key = o.key AND n.value = o.value
-            WHERE n.binary_id != o.binary_id
+            SELECT n.key, n.value,
+                   n.binary_id AS new_bid, o.binary_id AS old_bid
+            FROM (
+                SELECT key, value, binary_id FROM main.entitlements
+                GROUP BY key, value HAVING COUNT(*) = 1
+            ) n
+            JOIN (
+                SELECT key, value, binary_id FROM old_db.entitlements
+                GROUP BY key, value HAVING COUNT(*) = 1
+            ) o ON n.key = o.key AND n.value = o.value
+            WHERE n.binary_id IS NOT o.binary_id
         """).fetchall()
         for r in rows:
             r = dict(r)

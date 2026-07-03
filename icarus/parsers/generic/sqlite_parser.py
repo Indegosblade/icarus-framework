@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict
 
@@ -51,13 +52,30 @@ class SqliteParser(BaseParser):
                         ).fetchone()
                         if file_row:
                             try:
-                                src_conn = sqlite3.connect(str(path))
-                                tables = src_conn.execute(
-                                    "SELECT name FROM sqlite_master WHERE type='table' "
-                                    "AND name NOT LIKE 'sqlite_%'"
-                                ).fetchall()
+                                # Open the untrusted source DB read-only and
+                                # immutable via a safe file: URI. immutable=1
+                                # prevents -wal/-shm sidecar creation and
+                                # rollback/recovery, so merely cataloging a
+                                # hostile .db never mutates the source tree.
+                                # as_uri() percent-encodes the path so a
+                                # filename containing '?' cannot inject query
+                                # parameters (e.g. mode=rwc). closing() always
+                                # closes the source connection, including when
+                                # the sqlite_master read raises DatabaseError
+                                # on a corrupt/encrypted/non-database file.
+                                src_uri = (
+                                    Path(os.path.abspath(str(path))).as_uri()
+                                    + "?mode=ro&immutable=1"
+                                )
+                                with closing(
+                                    sqlite3.connect(src_uri, uri=True)
+                                ) as src_conn:
+                                    tables = src_conn.execute(
+                                        "SELECT name FROM sqlite_master "
+                                        "WHERE type='table' "
+                                        "AND name NOT LIKE 'sqlite_%'"
+                                    ).fetchall()
                                 schema_info = ", ".join(t[0] for t in tables[:30])
-                                src_conn.close()
                                 dup = conn.execute(
                                     "SELECT id FROM observations "
                                     "WHERE entity_table=? AND entity_id=? "
