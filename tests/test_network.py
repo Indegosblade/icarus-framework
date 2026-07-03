@@ -173,3 +173,123 @@ def test_deploy_scripts_normal_extraction_preserved():
     cmds = [json.loads(o[2])["command"] for o in observations
             if o[1] == "remote_command"]
     assert "systemctl restart pihole-FTL" in cmds
+
+
+# ---------------------------------------------------------------------------
+# Audit #215 — privacy_stack must not anchor project-level observations
+# (ip_address / credential_found / endpoint) to a hardcoded files.id=1
+# fallback when no /CLAUDE.md or /HANDOFF.md row exists. That fallback could
+# silently attach sensitive findings to whatever unrelated file happened to
+# be inserted first.
+# ---------------------------------------------------------------------------
+
+_PROJECT_OBSERVATION_TYPES = ("ip_address", "credential_found", "endpoint")
+
+
+def test_privacy_stack_skips_project_observations_without_anchor(tmp_path):
+    """No CLAUDE.md/HANDOFF.md anywhere in the tree -> no valid anchor entity.
+
+    extract_entities must skip the whole project-level observation batch
+    instead of defaulting anchor_id to 1 (an arbitrary file).
+    """
+    from icarus.core.schema import initialize_database
+    from icarus.parsers.network.privacy_stack import PrivacyStackParser
+
+    src = tmp_path / "src"
+    (src / "dashboard").mkdir(parents=True)
+    (src / "dashboard" / "app.py").write_text(
+        '"""Flask app for pihole integration."""\nfrom flask import Flask\n'
+    )
+    (src / "scripts").mkdir()
+    (src / "scripts" / "deploy.sh").write_text(
+        "#!/bin/bash\n"
+        "# password: hunter2page\n"
+        "ssh root@192.168.50.7\n"
+    )
+    (src / "wg").mkdir()
+    (src / "wg" / "wg0.conf").write_text(
+        "[Peer]\nEndpoint = 10.20.30.40:51820\n"
+    )
+    assert not (src / "CLAUDE.md").exists()
+    assert not (src / "HANDOFF.md").exists()
+
+    # Confirm the fixture would actually be picked up by the extraction
+    # helpers — otherwise a zero observation count below would be a
+    # tautology rather than evidence the anchor-skip fired.
+    found_ips, found_creds, found_eps = set(), set(), set()
+    PrivacyStackParser._extract_ips(
+        (src / "scripts" / "deploy.sh").read_text(), "/scripts/deploy.sh", ".sh", found_ips
+    )
+    PrivacyStackParser._extract_credentials(
+        (src / "scripts" / "deploy.sh").read_text(), "/scripts/deploy.sh", found_creds
+    )
+    PrivacyStackParser._extract_endpoints(
+        (src / "wg" / "wg0.conf").read_text(), "/wg/wg0.conf", found_eps
+    )
+    assert found_ips, "fixture IP was not detected by _extract_ips"
+    assert found_creds, "fixture credential was not detected by _extract_credentials"
+    assert found_eps, "fixture endpoint was not detected by _extract_endpoints"
+
+    db = tmp_path / "out.db"
+    initialize_database(db, {"source": str(src)})
+    stats = PrivacyStackParser().extract_entities(src, db)
+
+    assert stats["observations"] == 0, (
+        "project-level observations were recorded despite no anchor file existing"
+    )
+
+    conn = sqlite3.connect(str(db))
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM observations WHERE event_type IN (?,?,?)",
+            _PROJECT_OBSERVATION_TYPES,
+        ).fetchone()[0]
+        # Whatever file the walk inserted first (files.id=1) must not have
+        # been used as a silent anchor for these observation types.
+        first_file = conn.execute(
+            "SELECT id, path FROM files ORDER BY id LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert n == 0, "observations were anchored to an arbitrary file id"
+    assert first_file is not None and first_file[1] != "/CLAUDE.md"
+
+
+def test_privacy_stack_anchors_project_observations_to_real_file(tmp_path):
+    """Control case: when CLAUDE.md exists, observations anchor to its real
+    files.id — proving the fix doesn't just suppress the batch unconditionally.
+    """
+    from icarus.core.schema import initialize_database
+    from icarus.parsers.network.privacy_stack import PrivacyStackParser
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "CLAUDE.md").write_text("# Project\nPi-hole and WireGuard notes.\n")
+    (src / "scripts").mkdir()
+    (src / "scripts" / "deploy.sh").write_text(
+        "#!/bin/bash\n"
+        "# password: hunter2page\n"
+        "ssh root@192.168.50.7\n"
+    )
+
+    db = tmp_path / "out.db"
+    initialize_database(db, {"source": str(src)})
+    stats = PrivacyStackParser().extract_entities(src, db)
+    assert stats["observations"] > 0
+
+    conn = sqlite3.connect(str(db))
+    try:
+        claude_id = conn.execute(
+            "SELECT id FROM files WHERE path = '/CLAUDE.md'"
+        ).fetchone()[0]
+        anchor_ids = {
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT entity_id FROM observations WHERE event_type IN (?,?,?)",
+                _PROJECT_OBSERVATION_TYPES,
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert anchor_ids == {claude_id}

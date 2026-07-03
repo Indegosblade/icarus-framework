@@ -315,7 +315,7 @@ icarus-framework/
 │   ├── core/
 │   │   ├── pipeline.py           Phase orchestrator with checkpoint/resume
 │   │   ├── schema.py             SQLite schema v5, FTS5, migrations
-│   │   ├── query.py              Query engine with 6 intelligence views
+│   │   ├── query.py              Query engine with 3 intelligence views
 │   │   ├── differ.py             Cross-version diff engine
 │   │   ├── resolver.py           Entity resolution (Atom/Bag/EventLog)
 │   │   └── registry.py           Parser registry and detection contest
@@ -380,7 +380,7 @@ icarus-framework/
 
 Everything shipped in one sprint.
 
-- **Core:** Pipeline with checkpoint/resume, schema v4 with FTS5 full-text search, query engine with 6 intelligence views, cross-version differ
+- **Core:** Pipeline with checkpoint/resume, schema v4 with FTS5 full-text search, query engine with 3 intelligence views, cross-version differ
 - **Parsers:** 8 production parsers (Windows, Linux, CloudTrail, JSON, XML, SQLite, Archive, Binary) with YAML manifests, JSON Schema validation, registry detection contest, two-tier catalog, 4-gate test harness
 - **Entity resolution:** Atom/Bag/EventLog pattern with FTS5 blocking index, merge/split with full reversibility
 - **Observations:** Temporal event layer with generic foreign keys, two-graph architecture (ontology + events)
