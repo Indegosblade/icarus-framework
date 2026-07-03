@@ -1029,3 +1029,260 @@ def test_migration_v4_to_v5(tmp_db):
     assert {"daemon_id", "service_name"} <= cols
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Differ audit-backlog regression tests (findings #38/#78, #43, #48, #158, #225)
+# ---------------------------------------------------------------------------
+
+def _add_file(db, path, sha256):
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type, sha256) "
+        "VALUES (?, ?, '', 1, 'binary', ?)",
+        (path, path.rsplit("/", 1)[-1], sha256),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_changed_entities_detects_null_transitions(two_dbs):
+    """#38/#78: changed_entities must catch NULL<->value transitions.
+
+    SQL `!=` is NULL-blind (NULL != x is NULL, never TRUE), so NULL->value and
+    value->NULL changes were silently dropped. The IS NOT fix must report them,
+    while genuinely-unchanged rows (including NULL->NULL) stay excluded.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    _add_file(db1, "/a", "aaa")     # value -> value
+    _add_file(db2, "/a", "bbb")
+    _add_file(db1, "/b", None)      # NULL  -> value
+    _add_file(db2, "/b", "ccc")
+    _add_file(db1, "/c", "ddd")     # value -> NULL
+    _add_file(db2, "/c", None)
+    _add_file(db1, "/same", "eee")  # unchanged
+    _add_file(db2, "/same", "eee")
+    _add_file(db1, "/nn", None)     # NULL  -> NULL
+    _add_file(db2, "/nn", None)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.changed_entities("files", "path", "sha256")
+        by_path = {r["path"]: (r["old_value"], r["new_value"]) for r in result.changed}
+
+    assert by_path == {
+        "/a": ("aaa", "bbb"),
+        "/b": (None, "ccc"),
+        "/c": ("ddd", None),
+    }
+
+
+def test_removed_entities_positive(two_dbs):
+    """#158(a): a file present only in the old DB is reported as removed."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/gone', 'gone', '', 1, 'binary')"
+    )
+    conn.execute(  # shared file -> must NOT be reported as removed
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/keep', 'keep', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/usr/bin/keep', 'keep', '', 1, 'binary')"
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        removed = d.removed_entities("files", "path")
+        assert len(removed.removed) == 1
+        assert removed.removed[0]["path"] == "/usr/bin/gone"
+
+        full = d.full_diff()
+        assert full["files_removed"].total_changes == 1
+        assert full["files_removed"].removed[0]["path"] == "/usr/bin/gone"
+
+
+def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
+    """#158(c)/(d): sandbox_rule_reassigned and entitlement_reassigned branches."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO sandbox_rules (profile_id, operation, action) "
+        "VALUES (1, 'file-read-data', 'allow')"
+    )
+    conn.execute(
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (100, 'com.apple.security.network.client', 'true')"
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(  # same rule, different profile (reassigned)
+        "INSERT INTO sandbox_rules (profile_id, operation, action) "
+        "VALUES (2, 'file-read-data', 'allow')"
+    )
+    conn.execute(  # same entitlement, different binary (reassigned)
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (200, 'com.apple.security.network.client', 'true')"
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.structural_diff()
+
+    by_type = {c["type"]: c for c in result.structural}
+    assert by_type["sandbox_rule_reassigned"]["old_value"] == 1
+    assert by_type["sandbox_rule_reassigned"]["new_value"] == 2
+    assert by_type["entitlement_reassigned"]["old_value"] == 100
+    assert by_type["entitlement_reassigned"]["new_value"] == 200
+
+
+def test_structural_diff_dedupes_no_cartesian(two_dbs):
+    """#48: duplicate join keys must not Cartesian-product into false rows.
+
+    Each side has two 'helper' binaries, two 'mach-lookup' rules and two 'k/v'
+    entitlements (ambiguous keys) plus one unambiguous 'solo' binary that really
+    moved. The old joins cross-produced the duplicates into six false
+    moved/reassigned rows; only the genuine 'solo' move must survive.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    def seed(db, solo_file_id):
+        conn = sqlite3.connect(str(db))
+        conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (10, 'helper')")
+        conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (20, 'helper')")
+        conn.execute(
+            "INSERT INTO binaries (file_id, executable_name) VALUES (?, 'solo')",
+            (solo_file_id,),
+        )
+        conn.execute(
+            "INSERT INTO sandbox_rules (profile_id, operation, action) "
+            "VALUES (1, 'mach-lookup', 'allow')"
+        )
+        conn.execute(
+            "INSERT INTO sandbox_rules (profile_id, operation, action) "
+            "VALUES (2, 'mach-lookup', 'allow')"
+        )
+        conn.execute("INSERT INTO entitlements (binary_id, key, value) VALUES (5, 'k', 'v')")
+        conn.execute("INSERT INTO entitlements (binary_id, key, value) VALUES (6, 'k', 'v')")
+        conn.commit()
+        conn.close()
+
+    seed(db1, 100)  # solo -> file 100 (old)
+    seed(db2, 200)  # solo -> file 200 (new; genuine move)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        result = d.structural_diff()
+
+    assert [c["type"] for c in result.structural] == ["binary_file_moved"]
+    only = result.structural[0]
+    assert only["entity"] == "solo"
+    assert only["old_value"] == 100
+    assert only["new_value"] == 200
+
+
+def test_entitlement_diff_uses_natural_key(two_dbs):
+    """#43: new_entitlements must diff on bundle_id+key+value, not autoincrement id.
+
+    The shared entitlement is given a different autoincrement id in each DB (by
+    inserting the genuinely-new entitlement first in the new DB). An id-based
+    diff flags the shared row as new and misses the real one; the natural-key
+    diff reports exactly the genuinely-new entitlement.
+    """
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    conn = sqlite3.connect(str(db1))
+    conn.execute(
+        "INSERT INTO binaries (file_id, executable_name, bundle_id) "
+        "VALUES (1, 'app', 'com.acme.app')"
+    )
+    bid1 = conn.execute("SELECT id FROM binaries WHERE bundle_id='com.acme.app'").fetchone()[0]
+    conn.execute(
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.network.client', 'true')",
+        (bid1,),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db2))
+    conn.execute(
+        "INSERT INTO binaries (file_id, executable_name, bundle_id) "
+        "VALUES (1, 'app', 'com.acme.app')"
+    )
+    bid2 = conn.execute("SELECT id FROM binaries WHERE bundle_id='com.acme.app'").fetchone()[0]
+    conn.execute(  # genuinely-new entitlement inserted first -> shifts the shared id
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.get-task-allow', 'true')",
+        (bid2,),
+    )
+    conn.execute(  # shared entitlement: same bundle+key+value -> must NOT be 'new'
+        "INSERT INTO entitlements (binary_id, key, value) "
+        "VALUES (?, 'com.apple.security.network.client', 'true')",
+        (bid2,),
+    )
+    conn.commit()
+    conn.close()
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        new_keys = sorted(r["key"] for r in d.entitlement_diff()["new_entitlements"].added)
+
+    assert new_keys == ["com.apple.security.get-task-allow"]
+
+
+def test_differ_opens_databases_read_only(two_dbs):
+    """#225: the differ opens both DBs immutable read-only and never writes."""
+    from icarus.core.differ import IcarusDiffer
+    from icarus.core.schema import initialize_database
+
+    db1, db2 = two_dbs
+    initialize_database(db1)
+    initialize_database(db2)
+
+    with IcarusDiffer(str(db1), str(db2)) as d:
+        with pytest.raises(sqlite3.OperationalError):
+            d.conn.execute("CREATE TABLE should_not_exist (x)")
+        # reads still work through the read-only connection
+        assert d.added_entities("files", "path").total_changes == 0
+
+    # immutable=1 means no WAL/SHM sidecars are ever created for either DB
+    for base in (db1, db2):
+        assert not Path(str(base) + "-wal").exists()
+        assert not Path(str(base) + "-shm").exists()
