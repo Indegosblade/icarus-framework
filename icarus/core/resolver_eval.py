@@ -3,7 +3,10 @@
 This is a **measurement/analysis tool only**. It builds a controlled dataset by
 *perturbing* real atoms into new observations whose ground-truth identity is
 known by construction (a base atom and its ``move``/``recompile``/``identical``
-perturbation are the same entity; a ``new`` atom is nobody), runs the **real**
+perturbation are the same entity; a ``new`` atom is nobody, and a ``confusable``
+atom is a *hard negative* — it copies a base's name so it becomes a candidate
+and *looks* similar, yet is a different entity that must not be merged), runs
+the **real**
 resolver (:meth:`icarus.core.resolver.EntityResolver.resolve_scored`) completely
 unchanged over that dataset, and scores the resolver's output against the known
 labels as precision / recall / F1. It **never** alters resolution behavior — it
@@ -18,9 +21,9 @@ state. Stdlib-only.
 
 Pipeline::
 
-    atomize (real source)  ->  perturb_atoms (known labels)
+    atomize (real source)  ->  perturb_atoms (known labels, incl. hard negatives)
       ->  sweep(thresholds): reset + resolve_scored + evaluate
-      ->  recommend_threshold (max F1)
+      ->  recommend_threshold (max F1) / calibrate_threshold (precision-constrained)
 
 CLI::
 
@@ -45,14 +48,19 @@ from icarus.core.schema import initialize_database, open_db
 
 # ── Mutation vocabulary ────────────────────────────────────────────────────
 #
-# Consuming mutations each take over one distinct existing base atom; a "new"
-# mutation invents a fresh atom tied to no base. A "drop" consumes a base atom
-# but emits nothing, leaving that base alone in its cluster.
+# Consuming mutations each take over one distinct existing base atom; a "drop"
+# consumes a base atom but emits nothing, leaving that base alone in its
+# cluster. Non-consuming mutations invent a fresh atom tied to no base: "new"
+# is an all-distinct atom that looks like nothing, while "confusable" is a hard
+# negative — it copies a base's name so it becomes a candidate and *looks*
+# similar, yet is a genuinely different entity. Confusables are what put the
+# precision axis under test: an all-distinct "new" atom can never be wrongly
+# merged, so on its own it leaves precision trivially 1.0 at every threshold.
 CONSUMING_MUTATIONS: Tuple[str, ...] = ("identical", "move", "recompile", "rename", "drop")
-NONCONSUMING_MUTATIONS: Tuple[str, ...] = ("new",)
+NONCONSUMING_MUTATIONS: Tuple[str, ...] = ("new", "confusable", "confusable_strong")
 ALL_MUTATIONS: Tuple[str, ...] = CONSUMING_MUTATIONS + NONCONSUMING_MUTATIONS
 # The mutations that produce a genuine (base, perturbation) true pair we can
-# score recall against. new/drop have no such pair.
+# score recall against. new/drop/confusable have no such pair.
 MATCHING_MUTATIONS: Tuple[str, ...] = ("identical", "move", "recompile", "rename")
 
 # Which property carries each abstract role per entity type. Mutations target
@@ -86,7 +94,13 @@ class GroundTruth:
 
 @dataclass
 class Metrics:
-    """Pairwise precision / recall / F1 of the resolver against a GroundTruth."""
+    """Pairwise precision / recall / F1 of the resolver against a GroundTruth.
+
+    ``confusable_false_merges`` additionally reports how many ``confusable`` hard
+    negatives (each a singleton cluster by construction) the resolver landed in a
+    bag with any other atom — a direct readout of precision damage, and 0 for a
+    dataset that plants no confusables.
+    """
 
     precision: float
     recall: float
@@ -95,6 +109,7 @@ class Metrics:
     fp: int
     fn: int
     per_mutation_recall: Dict[str, float]
+    confusable_false_merges: int = 0
 
 
 # ── Role resolution + per-mutation field edits ─────────────────────────────
@@ -194,6 +209,60 @@ def _make_new(i: int, entity_type: str, rng: random.Random) -> Tuple[str, dict]:
     return source_key, props
 
 
+def _make_confusable(
+    base_source_key: str,
+    base_props: dict,
+    entity_type: str,
+    i: int,
+    rng: random.Random,
+    strong: bool,
+) -> Tuple[str, dict]:
+    """Invent a **hard-negative** atom that *looks* like ``base`` but is not it.
+
+    Copies the base's ``name``-role value verbatim so the atom lands in the same
+    blocking bucket (and, via a name-derived ``source_key``, shares FTS tokens
+    too) — i.e. it becomes a scoring *candidate* against that base. But it is a
+    genuinely different entity: a distinct ``source_key``, a distinct random
+    ``path`` (if the type has a path role) and a fresh 256-bit ``hash`` (if it
+    has a hash role). With the name matching but hash and path differing, it
+    scores *below* a should-match pair yet *above* nothing, so a low-enough
+    threshold wrongly merges it → a false positive that finally exercises
+    precision. When the type has neither a hash nor a path role, the shared name
+    plus a distinct source_key still makes it a candidate that must not be merged
+    on name alone.
+    """
+    tag = format(rng.getrandbits(64), "016x")  # nosec B311 - eval data, not security
+    roles = FIELD_ROLES[entity_type]
+    name_key = roles.get("name")
+    hash_key = roles.get("hash")
+    path_key = roles.get("path")
+    name_val = base_props.get(name_key) if name_key is not None else None
+    # A distinct source_key that still carries the base's name tokens (so the FTS
+    # blocking mechanism also flags it); never equal to the base's own key.
+    stem = str(name_val) if name_val else base_source_key
+    source_key = f"evalconfusable{i}-{stem}-{tag}"
+
+    if strong and hash_key is not None:
+        # Feature-identical to a `recompile`: same name, same path, same every
+        # other field as the base — a genuinely different entity that differs
+        # ONLY in content hash. It scores exactly where recompiles do, so it
+        # proves recompile-recall and this false positive are won or lost
+        # together and cannot be separated on features alone.
+        props: Dict[str, object] = dict(base_props)
+    else:
+        # Weak (or strong on a hashless type, where "same everything but new
+        # content" cannot be expressed): shares the base's name only, at a
+        # different random location.
+        props = {}
+        if name_key is not None and name_val is not None:
+            props[name_key] = name_val  # verbatim → same blocking bucket as the base
+        if path_key is not None:
+            props[path_key] = f"/eval/confusable/{i}/{tag}"  # own basename → no path credit
+    if hash_key is not None:
+        props[hash_key] = format(rng.getrandbits(256), "064x")  # nosec B311 - eval data
+    return source_key, props
+
+
 def _insert_atom(
     conn: sqlite3.Connection,
     version_id: int,
@@ -243,10 +312,13 @@ def perturb_atoms(
     a seeded shuffle for reproducibility, assigns each *consuming* mutation
     (identical/move/recompile/rename/drop) to a distinct base atom and inserts
     the resulting perturbed atoms under ``new_version_id``. ``new`` mutations
-    invent fresh atoms tied to no base.
+    invent fresh atoms tied to no base; ``confusable`` mutations invent hard
+    negatives that copy a base's name (cycling the shuffled base order) but are
+    their own singleton clusters — candidates that must not be merged.
 
     Raises ``ValueError`` if the consuming-mutation count exceeds the number of
-    base atoms, if ``entity_type`` is unknown, or on an unknown mutation label.
+    base atoms, if ``confusable`` atoms are requested with no base atom to copy a
+    name from, if ``entity_type`` is unknown, or on an unknown mutation label.
 
     Returns the :class:`GroundTruth` covering every atom of the type across both
     versions.
@@ -281,6 +353,12 @@ def perturb_atoms(
                 f"{len(base)} base atom(s) of type {entity_type!r} exist under "
                 f"version {base_version_id}"
             )
+        if (mutations.get("confusable", 0) or mutations.get("confusable_strong", 0)) and not base:
+            raise ValueError(
+                "confusable mutation(s) requested but no base atoms of type "
+                f"{entity_type!r} exist under version {base_version_id} to copy "
+                "a name from"
+            )
 
         # Seeded shuffle → each consuming mutation gets a distinct base atom.
         base_ids = sorted(base)
@@ -312,6 +390,30 @@ def perturb_atoms(
             cluster_of[nid] = nid
             mutation_of[nid] = "new"
 
+        # Hard negatives: cycle the already-shuffled base order deterministically,
+        # copy each chosen base's name, but stay a singleton cluster (matches no
+        # one). Requires >= 1 base atom, guarded above.
+        for i in range(mutations.get("confusable", 0)):
+            base_key, base_props = base[base_ids[i % len(base_ids)]]
+            conf_key, conf_props = _make_confusable(
+                base_key, base_props, entity_type, i, rng, strong=False
+            )
+            cid = _insert_atom(conn, new_version_id, entity_type, conf_key, conf_props, now)
+            cluster_of[cid] = cid
+            mutation_of[cid] = "confusable"
+
+        # Strong hard negatives: same name AND location as a base, differing only
+        # in content hash — feature-identical to a `recompile`, so they trip
+        # precision at a realistic threshold (not just a very low one).
+        for i in range(mutations.get("confusable_strong", 0)):
+            base_key, base_props = base[base_ids[i % len(base_ids)]]
+            conf_key, conf_props = _make_confusable(
+                base_key, base_props, entity_type, i, rng, strong=True
+            )
+            cid = _insert_atom(conn, new_version_id, entity_type, conf_key, conf_props, now)
+            cluster_of[cid] = cid
+            mutation_of[cid] = "confusable_strong"
+
         conn.commit()
     finally:
         conn.close()
@@ -332,7 +434,9 @@ def evaluate(db_path: str, entity_type: str, ground_truth: GroundTruth) -> Metri
     Precision and recall are 1.0 when their denominator is 0; F1 is 0.0 when
     precision+recall is 0. ``per_mutation_recall`` reports, per matching mutation
     actually present, the fraction of its (base, perturbation) true pairs whose
-    two atoms share a bag.
+    two atoms share a bag. ``confusable_false_merges`` counts how many
+    ``confusable`` atoms (each its own singleton cluster) landed in a bag with
+    any other atom — every one is a guaranteed false merge.
     """
     conn = open_db(db_path)
     try:
@@ -386,6 +490,19 @@ def evaluate(db_path: str, entity_type: str, ground_truth: GroundTruth) -> Metri
         matched = sum(1 for base_id, pid in pairs if group(base_id) == group(pid))
         per_mutation_recall[mutation] = matched / len(pairs)
 
+    # Confusable damage: every confusable is its own singleton cluster, so any
+    # bag-mate is a false merge. Count confusables whose bag holds >= 2 atoms.
+    bag_members: Dict[int, int] = {}
+    for bag_id in bag_of.values():
+        bag_members[bag_id] = bag_members.get(bag_id, 0) + 1
+    confusable_false_merges = sum(
+        1
+        for atom_id, label in ground_truth.mutation_of.items()
+        if label.startswith("confusable")
+        and atom_id in bag_of
+        and bag_members[bag_of[atom_id]] >= 2
+    )
+
     return Metrics(
         precision=precision,
         recall=recall,
@@ -394,6 +511,7 @@ def evaluate(db_path: str, entity_type: str, ground_truth: GroundTruth) -> Metri
         fp=fp,
         fn=fn,
         per_mutation_recall=per_mutation_recall,
+        confusable_false_merges=confusable_false_merges,
     )
 
 
@@ -437,6 +555,36 @@ def recommend_threshold(results: List[Tuple[float, Metrics]]) -> float:
     return best_t
 
 
+def calibrate_threshold(
+    results: List[Tuple[float, Metrics]], min_precision: float = 0.95
+) -> float:
+    """The operating threshold: the LOWEST threshold whose precision >= min_precision
+    (maximizing recall while holding precision), tie-broken toward higher F1. If no
+    threshold reaches min_precision, return the threshold with the highest precision
+    (tie -> higher threshold). Contrast recommend_threshold, which maximizes F1 alone
+    and — without hard negatives in the dataset — can pick a recklessly low value."""
+    if not results:
+        raise ValueError("calibrate_threshold needs at least one (threshold, metrics)")
+
+    passing = [(t, m) for (t, m) in results if m.precision >= min_precision]
+    if passing:
+        # Lowest threshold (max recall) that holds the precision floor; a tie on
+        # threshold breaks toward the higher F1.
+        best_t, best_m = passing[0]
+        for t, m in passing[1:]:
+            if t < best_t or (t == best_t and m.f1 > best_m.f1):
+                best_t, best_m = t, m
+        return best_t
+
+    # Nothing clears the floor: fall back to the most precise threshold, breaking
+    # a tie toward the higher (stricter, safer) threshold.
+    best_t, best_m = results[0]
+    for t, m in results[1:]:
+        if m.precision > best_m.precision or (m.precision == best_m.precision and t > best_t):
+            best_t, best_m = t, m
+    return best_t
+
+
 # ── CLI ────────────────────────────────────────────────────────────────────
 
 
@@ -455,18 +603,24 @@ def _insert_version(conn: sqlite3.Connection, run_id: str) -> int:
 
 def _default_plan(base_count: int) -> Dict[str, int]:
     """A perturbation plan scaled to ``base_count``: ~30% identical, 20% move,
-    20% recompile, 15% rename, 10% new, 5% drop, at least 1 each where the count
-    allows. Consuming mutations are clamped to fit the base atoms, dropping the
-    least-informative ones (drop, then rename, ...) first."""
+    20% recompile, 15% rename, 10% new, 10% confusable, 5% drop, at least 1 each
+    where the count allows. Consuming mutations are clamped to fit the base atoms,
+    dropping the least-informative ones (drop, then rename, ...) first; the
+    non-consuming new/confusable atoms tie up no base so they escape the clamp."""
     ratios = [
         ("identical", 0.30),
         ("move", 0.20),
         ("recompile", 0.20),
         ("rename", 0.15),
         ("new", 0.10),
+        ("confusable", 0.10),
+        ("confusable_strong", 0.08),
         ("drop", 0.05),
     ]
     plan = {name: max(1, round(ratio * base_count)) for name, ratio in ratios}
+    # A confusable must copy a real base name, so it needs >= 1 base atom.
+    if base_count < 1:
+        plan["confusable"] = 0
 
     reduce_order = ["drop", "rename", "recompile", "move", "identical"]
 
@@ -490,28 +644,67 @@ def _print_report(
     plan: Dict[str, int],
     results: List[Tuple[float, Metrics]],
     best_t: float,
+    cal_t: float,
+    min_precision: float = 0.95,
 ) -> None:
     print()
     print(f"Resolver evaluation  —  entity_type={entity_type!r}, base atoms={base_count}")
     print("Perturbation plan:   " + ", ".join(f"{k}={v}" for k, v in plan.items()))
     print()
+    # c-merge = confusable false-merges: hard negatives wrongly bagged with anyone.
     header = (
         f"{'threshold':>10}  {'precision':>9}  {'recall':>7}  "
-        f"{'f1':>7}  {'tp':>5}  {'fp':>5}  {'fn':>5}"
+        f"{'f1':>7}  {'tp':>5}  {'fp':>5}  {'fn':>5}  {'c-merge':>7}"
     )
     print(header)
     print("-" * len(header))
     for t, metrics in results:
-        marker = "  <-- best" if t == best_t else ""
+        if t == best_t and t == cal_t:
+            marker = "  <-- max-F1 & calibrated"
+        elif t == best_t:
+            marker = "  <-- max-F1"
+        elif t == cal_t:
+            marker = "  <-- calibrated"
+        else:
+            marker = ""
         print(
             f"{t:>10.3f}  {metrics.precision:>9.3f}  {metrics.recall:>7.3f}  "
             f"{metrics.f1:>7.3f}  {metrics.tp:>5}  {metrics.fp:>5}  "
-            f"{metrics.fn:>5}{marker}"
+            f"{metrics.fn:>5}  {metrics.confusable_false_merges:>7}{marker}"
         )
     print()
 
-    best_metrics = next(metrics for t, metrics in results if t == best_t)
-    print(f"Recommended threshold: {best_t:.3f}  (F1={best_metrics.f1:.3f})")
+    best_metrics = next(m for t, m in results if t == best_t)
+    cal_metrics = next(m for t, m in results if t == cal_t)
+    print(
+        f"Recommended threshold (max F1):    {best_t:.3f}  "
+        f"(F1={best_metrics.f1:.3f}, precision={best_metrics.precision:.3f}, "
+        f"c-merge={best_metrics.confusable_false_merges})"
+    )
+    if cal_metrics.precision >= min_precision:
+        verdict = f"precision-safe (>= {min_precision:.2f})  <-- use this"
+    else:
+        verdict = (
+            f"NO threshold reached precision {min_precision:.2f}; this is the "
+            f"most precise available"
+        )
+    print(
+        f"Calibrated threshold (precision-first, >= {min_precision:.2f}):  {cal_t:.3f}  "
+        f"(precision={cal_metrics.precision:.3f}, recall={cal_metrics.recall:.3f}, "
+        f"F1={cal_metrics.f1:.3f})  {verdict}"
+    )
+
+    conf_planned = plan.get("confusable", 0)
+    if conf_planned:
+        print(
+            f"Confusable hard negatives: {conf_planned} planted; false-merges = "
+            f"{best_metrics.confusable_false_merges} at max-F1 t={best_t:.3f}, "
+            f"{cal_metrics.confusable_false_merges} at calibrated t={cal_t:.3f}. "
+            f"Prefer the calibrated (precision-safe) threshold."
+        )
+    else:
+        print("Confusable hard negatives: none planted — precision axis untested.")
+
     if best_metrics.per_mutation_recall:
         print("Per-mutation recall at recommended threshold:")
         for mutation in MATCHING_MUTATIONS:
@@ -596,7 +789,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         results = sweep(eval_path, entity_type, ground_truth, thresholds)
         best_t = recommend_threshold(results)
-        _print_report(entity_type, base_count, plan, results, best_t)
+        cal_t = calibrate_threshold(results)
+        _print_report(entity_type, base_count, plan, results, best_t, cal_t)
         return 0
     finally:
         for suffix in ("", "-wal", "-shm"):

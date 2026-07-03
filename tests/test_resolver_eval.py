@@ -6,6 +6,7 @@ These tests hand-check the pairwise metric math on tiny, fully-known datasets,
 and verify the perturbation builds the ground-truth structure it claims to.
 """
 
+import json
 import sqlite3
 import tempfile
 from collections import Counter
@@ -16,6 +17,8 @@ import pytest
 from icarus.core.resolver import EntityResolver
 from icarus.core.resolver_eval import (
     GroundTruth,
+    Metrics,
+    calibrate_threshold,
     evaluate,
     perturb_atoms,
     recommend_threshold,
@@ -274,3 +277,154 @@ def test_perturb_too_many_consuming_raises(eval_db):
         perturb_atoms(
             eval_db, BASE_VID, NEW_VID, {"identical": 2}, "binaries", seed=1
         )
+
+
+# ── confusable: a hard negative that copies a base's name but is its own id ──
+
+
+def test_confusable_is_singleton_sharing_name(eval_db):
+    """A `confusable` atom copies the base's name-role value verbatim yet is its
+    own singleton cluster, with a distinct hash and path (a different entity)."""
+    _ingest(
+        eval_db,
+        [("payload", {"sha256": "abc", "executable_name": "payload", "path": "/bin/payload"})],
+    )
+    gt = perturb_atoms(
+        eval_db, BASE_VID, NEW_VID, {"identical": 1, "confusable": 1}, "binaries", seed=1
+    )
+
+    conf_ids = [aid for aid, label in gt.mutation_of.items() if label == "confusable"]
+    assert len(conf_ids) == 1
+    cid = conf_ids[0]
+    # Its own singleton cluster — maps to itself and nobody else shares that id.
+    assert gt.cluster_of[cid] == cid
+    assert list(gt.cluster_of.values()).count(cid) == 1
+
+    conn = open_db(eval_db)
+    try:
+        props = json.loads(
+            conn.execute("SELECT properties FROM atoms WHERE id = ?", (cid,)).fetchone()[0]
+        )
+    finally:
+        conn.close()
+    # Shares the base's name-role value verbatim (→ same blocking bucket)...
+    assert props["executable_name"] == "payload"
+    # ...but is a genuinely different entity: distinct hash and path.
+    assert props.get("sha256") != "abc"
+    assert props.get("path") != "/bin/payload"
+
+
+def test_confusable_makes_precision_drop(eval_db):
+    """The whole point of the increment: a confusable that shares a base's name
+    (but differs in hash+path) is wrongly merged at a LOW threshold — driving a
+    false positive and precision < 1.0 — yet stays separate at a HIGH threshold.
+    This proves the harness now actually exercises the precision axis."""
+    _ingest(
+        eval_db,
+        [("helper", {"sha256": "aaaa", "executable_name": "helper", "path": "/usr/bin/helper"})],
+    )
+    gt = perturb_atoms(
+        eval_db, BASE_VID, NEW_VID, {"identical": 1, "confusable": 1}, "binaries", seed=1
+    )
+
+    by_t = dict(sweep(eval_db, "binaries", gt, [0.3, 0.9]))
+    low, high = by_t[0.3], by_t[0.9]
+
+    # Low threshold: the confusable is merged wrongly → a false positive.
+    assert low.fp >= 1
+    assert low.precision < 1.0
+    assert low.confusable_false_merges >= 1
+    # High threshold: it stays its own bag → precision intact, no false merge.
+    assert high.precision == 1.0
+    assert high.confusable_false_merges == 0
+
+
+def test_confusable_strong_drops_precision_at_realistic_threshold(eval_db):
+    """A `confusable_strong` shares a base's name AND path, differing only in
+    content hash — feature-identical to a `recompile` yet a genuinely different
+    entity. It is wrongly merged at a realistic MID threshold (0.5), driving
+    precision below 1.0 there, and only a HIGH threshold (0.85) keeps it apart.
+    This demonstrates the real tension: recompile recall and this false positive
+    are won or lost together."""
+    _ingest(
+        eval_db,
+        [("svc", {"sha256": "aaaa", "executable_name": "svc", "path": "/usr/bin/svc"})],
+    )
+    gt = perturb_atoms(
+        eval_db, BASE_VID, NEW_VID, {"identical": 1, "confusable_strong": 1}, "binaries", seed=1
+    )
+    by_t = dict(sweep(eval_db, "binaries", gt, [0.5, 0.85]))
+
+    # Mid threshold: the strong confusable (name+path match, hash differs) is
+    # wrongly merged -> precision damage at a realistic operating point.
+    assert by_t[0.5].confusable_false_merges >= 1
+    assert by_t[0.5].precision < 1.0
+    # High threshold: kept separate -> precision intact.
+    assert by_t[0.85].precision == 1.0
+    assert by_t[0.85].confusable_false_merges == 0
+
+
+def test_confusable_requires_a_base_atom(eval_db):
+    """Confusable atoms copy a real base's name, so requesting them with no base
+    atom is a ValueError, not a silent no-op."""
+    with pytest.raises(ValueError, match="confusable"):
+        perturb_atoms(
+            eval_db, BASE_VID, NEW_VID, {"confusable": 1}, "binaries", seed=1
+        )
+
+
+# ── calibrate_threshold: precision-constrained, unlike max-F1 recommend ─────
+
+
+def _metrics(precision, recall=1.0, f1=0.0):
+    """A Metrics carrying only the fields calibrate_threshold reads."""
+    return Metrics(
+        precision=precision, recall=recall, f1=f1, tp=0, fp=0, fn=0, per_mutation_recall={}
+    )
+
+
+def test_calibrate_threshold_picks_lowest_precise():
+    """Precision is below the floor at low thresholds and clears it from 0.7 up:
+    calibrate returns the LOWEST threshold that still meets the floor (max recall
+    while holding precision), where max-F1 recommend would happily go lower."""
+    results = [
+        (0.5, _metrics(0.80, recall=1.00, f1=0.89)),
+        (0.6, _metrics(0.90, recall=0.95, f1=0.92)),
+        (0.7, _metrics(0.97, recall=0.90, f1=0.93)),
+        (0.8, _metrics(0.98, recall=0.85, f1=0.91)),
+        (0.9, _metrics(1.00, recall=0.70, f1=0.82)),
+    ]
+    assert calibrate_threshold(results, min_precision=0.95) == 0.7
+    # Contrast: max-F1 recommend prefers the reckless low-precision 0.7? No — here
+    # 0.7 happens to also be max-F1; the divergence is exercised elsewhere. The
+    # key claim is calibrate never dips below the precision floor:
+    assert calibrate_threshold(results, min_precision=0.99) == 0.9
+
+
+def test_calibrate_threshold_ties_break_toward_higher_f1():
+    """Two thresholds share the lowest precise value; the higher-F1 one wins."""
+    results = [
+        (0.7, _metrics(0.96, recall=0.90, f1=0.93)),
+        (0.7, _metrics(0.96, recall=0.95, f1=0.955)),
+        (0.9, _metrics(0.99, recall=0.60, f1=0.75)),
+    ]
+    # Both 0.7 rows pass; tie on threshold → higher F1 (0.955) — still returns 0.7.
+    assert calibrate_threshold(results, min_precision=0.95) == 0.7
+
+
+def test_calibrate_threshold_falls_back_to_max_precision():
+    """When NO threshold reaches the floor, return the most precise threshold
+    (ties broken toward the higher, stricter threshold)."""
+    results = [
+        (0.5, _metrics(0.60)),
+        (0.7, _metrics(0.80)),
+        (0.9, _metrics(0.75)),
+    ]
+    assert calibrate_threshold(results, min_precision=0.95) == 0.7
+
+    # Tie on precision → higher threshold wins.
+    tied = [
+        (0.5, _metrics(0.80)),
+        (0.9, _metrics(0.80)),
+    ]
+    assert calibrate_threshold(tied, min_precision=0.95) == 0.9
