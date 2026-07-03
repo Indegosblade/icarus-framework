@@ -44,6 +44,18 @@ ATOM_PROJECTIONS: Dict[str, ProjectionSpec] = {
         "daemons",
         "SELECT label, program, plist_path FROM daemons",
         ["label", "program", "plist_path"]),
+    "frameworks": ProjectionSpec(
+        "frameworks",
+        "SELECT path, name, bundle_id, version FROM frameworks",
+        ["path", "name", "bundle_id", "version"]),
+    "kexts": ProjectionSpec(
+        "kexts",
+        "SELECT bundle_id, name, version FROM kexts",
+        ["bundle_id", "name", "version"]),
+    "files": ProjectionSpec(
+        "files",
+        "SELECT path, filename, extension, size, sha256, file_type FROM files",
+        ["path", "filename", "extension", "size", "sha256", "file_type"]),
 }
 
 

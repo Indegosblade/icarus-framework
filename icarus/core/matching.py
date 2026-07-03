@@ -112,6 +112,23 @@ def cmp_path_suffix(a: Optional[str], b: Optional[str]) -> float:
     return equal / denom if denom else 0.0
 
 
+def cmp_numeric_close(a: Optional[str], b: Optional[str]) -> float:
+    """Relative-closeness of two numeric strings in [0,1]: 1.0 when equal,
+    decaying with relative difference, 0.0 when far apart or unparseable."""
+    if a is None or b is None:
+        return 0.0
+    try:
+        fa, fb = float(a), float(b)
+    except (TypeError, ValueError):
+        return 0.0
+    if fa == fb:
+        return 1.0
+    denom = max(abs(fa), abs(fb))
+    if denom == 0:
+        return 1.0
+    return max(0.0, 1.0 - abs(fa - fb) / denom)
+
+
 # ── Weighted scoring ──────────────────────────────────────────────────────
 
 
@@ -136,6 +153,24 @@ SCORING_SPECS: Dict[str, List[FieldRule]] = {
         FieldRule("label", cmp_norm_equal, 3.0),
         FieldRule("program", cmp_path_suffix, 2.0),
         FieldRule("plist_path", cmp_path_suffix, 1.0),
+    ],
+    "frameworks": [
+        FieldRule("bundle_id", cmp_norm_equal, 3.0),
+        FieldRule("name", cmp_norm_equal, 2.0),
+        FieldRule("path", cmp_path_suffix, 1.0),
+        FieldRule("version", cmp_exact, 0.5),
+    ],
+    "kexts": [
+        FieldRule("bundle_id", cmp_norm_equal, 3.0),
+        FieldRule("name", cmp_norm_equal, 2.0),
+        FieldRule("version", cmp_exact, 1.0),
+    ],
+    "files": [
+        FieldRule("sha256", cmp_exact, 3.0),
+        FieldRule("filename", cmp_norm_equal, 1.5),
+        FieldRule("path", cmp_path_suffix, 1.0),
+        FieldRule("size", cmp_numeric_close, 0.5),
+        FieldRule("file_type", cmp_exact, 0.5),
     ],
 }
 
@@ -182,6 +217,9 @@ def score_pair(
 DEFAULT_BLOCKING_KEYS: Dict[str, List[str]] = {
     "binaries": ["executable_name"],
     "daemons": ["label"],
+    "frameworks": ["name"],
+    "kexts": ["bundle_id"],
+    "files": ["filename"],
 }
 
 
