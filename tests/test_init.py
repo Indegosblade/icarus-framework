@@ -56,11 +56,11 @@ def test_public_api_builds_a_working_pipeline_end_to_end(tmp_path):
     which is exactly the recipe the audit found undocumented/impossible."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "AGENTS.md").write_text("Pi-hole and WireGuard project.\n")
+    (src / "config.json").write_text('{"service": "example", "enabled": true}\n')
     out = tmp_path / "out.db"
 
     pipeline = icarus.create_default_pipeline(
-        src, out, parser_name="network/privacy_stack", skip_hygeia=True
+        src, out, parser_name="generic/json", skip_hygeia=True
     )
     assert isinstance(pipeline, icarus.Pipeline)
     pipeline.run(resume=False)
@@ -68,7 +68,6 @@ def test_public_api_builds_a_working_pipeline_end_to_end(tmp_path):
     with icarus.IcarusQuery(str(out)) as q:
         stats = q.stats()
     assert stats.get("files", 0) >= 1
-    assert stats.get("daemons", 0) >= 1
 
     # initialize_database is idempotent/safe to call again on the same file.
     result = icarus.initialize_database(out)
@@ -81,4 +80,4 @@ def test_public_api_builds_a_working_pipeline_end_to_end(tmp_path):
         ).fetchone()
     finally:
         conn.close()
-    assert row is not None and row[0] == "network/privacy_stack"
+    assert row is not None and row[0] == "generic/json"

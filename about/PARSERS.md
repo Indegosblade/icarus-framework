@@ -26,8 +26,6 @@ Under evaluation in `parsers-devel.json` — not yet gated for production.
 | Parser | Specificity | Reliability |
 |--------|:-----------:|:-----------:|
 | `macos` | 8 | B |
-| `network/privacy_stack` | 10 | B |
-| `network/deploy_scripts` | 15 | B |
 
 **`macos`** — macOS / iOS root filesystem: daemons, Mach services, entitlements, kexts, frameworks. Ingests an extracted rootfs for iOS/macOS daemon and attack-surface mapping (Apple Security Bounty research), in phases:
 
@@ -36,10 +34,6 @@ Under evaluation in `parsers-devel.json` — not yet gated for production.
 3. **IOKit kexts**, **frameworks**, and the **sandbox-profile catalog**.
 
 `extract_relationships` links each daemon to its executable binary.
-
-**`network/privacy_stack`** — home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard, deploy scripts).
-
-**`network/deploy_scripts`** — Paramiko-based deploy/fix scripts for remote server management.
 
 ---
 

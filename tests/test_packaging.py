@@ -30,8 +30,6 @@ EXPECTED_YAML = {
     "icarus/parsers/generic/json_parser.yaml",
     "icarus/parsers/generic/sqlite_parser.yaml",
     "icarus/parsers/generic/xml_parser.yaml",
-    "icarus/parsers/network/deploy_scripts.yaml",
-    "icarus/parsers/network/privacy_stack.yaml",
 }
 EXPECTED_JSON = {
     "icarus/parsers/schema/parser_manifest.schema.json",

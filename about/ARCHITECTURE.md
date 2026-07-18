@@ -17,7 +17,7 @@ Structured data sources contain implicit relationships that are invisible at the
 |    +----v----+    +----v----+    +----v----+    +----v----+        |
 |    | PARSER  |    | SCHEMA  |    |  QUERY  |    |RESOLVER |        |
 |    |Registry |    | Manager |    | Engine  |    | Entity  |        |
-|    |11 total |    |         |    |         |    | Resolve |        |
+|    |9 total  |    |         |    |         |    | Resolve |        |
 |    +----+----+    +----+----+    +----+----+    +----+----+        |
 |         |              |              |              |              |
 |         +------- ------+---------- ---+--------------+             |
