@@ -148,6 +148,14 @@ def open_db(path: Union[str, Path], *, readonly: bool = False) -> sqlite3.Connec
 
 SCHEMA_VERSION = 6
 
+
+class SchemaVersionError(ValueError):
+    """Raised when a database declares a schema version ICARUS cannot safely use."""
+
+
+class SchemaValidationError(RuntimeError):
+    """Raised when a current-version database is missing required schema objects."""
+
 ENTITY_TABLES = (
     "files", "binaries", "daemons", "entitlements",
     "sandbox_profiles", "sandbox_rules", "kexts", "frameworks",
@@ -500,6 +508,53 @@ WHERE f.path LIKE '%/test%' OR f.path LIKE '%/debug%'
 """
 
 
+# Derive the required named objects from the canonical DDL so the validation
+# list cannot drift independently from fresh-database initialization.
+_EXPECTED_SCHEMA_OBJECTS = {
+    "table": frozenset(re.findall(
+        r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+        CORE_SCHEMA + FTS_SCHEMA,
+        re.IGNORECASE,
+    )),
+    "index": frozenset(re.findall(
+        r"CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+        INDEXES,
+        re.IGNORECASE,
+    )),
+    "trigger": frozenset(re.findall(
+        r"CREATE\s+TRIGGER\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+        FTS_TRIGGERS,
+        re.IGNORECASE,
+    )),
+    "view": frozenset(re.findall(
+        r"CREATE\s+VIEW\s+IF\s+NOT\s+EXISTS\s+(\w+)",
+        VIEWS,
+        re.IGNORECASE,
+    )),
+}
+
+
+def _validate_current_schema(conn: sqlite3.Connection) -> None:
+    """Refuse a database that claims the current version but is incomplete."""
+    missing = []
+    for object_type, expected_names in _EXPECTED_SCHEMA_OBJECTS.items():
+        actual_names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = ?", (object_type,)
+            )
+        }
+        missing.extend(
+            f"{object_type} {name!r}" for name in sorted(expected_names - actual_names)
+        )
+
+    if missing:
+        raise SchemaValidationError(
+            f"ICARUS database claims schema version {SCHEMA_VERSION} but is incomplete; "
+            f"missing {', '.join(missing)}; refusing to modify the database"
+        )
+
+
 def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Additive migration: adds versions table and provenance columns."""
     conn.execute("""
@@ -686,24 +741,48 @@ def _v5_to_v6(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _read_schema_version(conn: sqlite3.Connection) -> Optional[int]:
+    """Read and validate the metadata schema version without changing the database."""
+    metadata_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata'"
+    ).fetchone()
+    if metadata_exists is None:
+        return None
+
+    row = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'schema_version'"
+    ).fetchone()
+    if row is None:
+        return None
+
+    try:
+        return int(row[0])
+    except (TypeError, ValueError) as exc:
+        raise SchemaVersionError(
+            f"Invalid ICARUS schema version {row[0]!r}: expected an integer; "
+            "refusing to modify the database"
+        ) from exc
+
+
 def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
     """
     Create and initialize an ICARUS database.
 
     Creates a fresh v6 database, or migrates an existing v2/v3/v4/v5 database
-    forward. Returns stats dict with table count and schema version.
+    forward. Databases outside that supported range are refused before their
+    stored version is changed. Returns stats dict with table count and schema
+    version.
     """
     conn = open_db(db_path)
     try:
-        existing_version = None
-        try:
-            row = conn.execute(
-                "SELECT value FROM metadata WHERE key = 'schema_version'"
-            ).fetchone()
-            if row:
-                existing_version = int(row[0])
-        except sqlite3.OperationalError:
-            pass
+        existing_version = _read_schema_version(conn)
+
+        if existing_version is not None and not 2 <= existing_version <= SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"Unsupported ICARUS schema version {existing_version}: this install "
+                f"supports versions 2 through {SCHEMA_VERSION}; refusing to modify "
+                "the database"
+            )
 
         if existing_version == 2:
             migrate_v2_to_v3(conn)
@@ -719,17 +798,18 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
             _v5_to_v6(conn)
         elif existing_version == 5:
             _v5_to_v6(conn)
-        elif existing_version is None or existing_version < 2:
+        elif existing_version == SCHEMA_VERSION:
+            _validate_current_schema(conn)
+        elif existing_version is None:
             conn.executescript(CORE_SCHEMA)
             conn.executescript(INDEXES)
             conn.executescript(FTS_SCHEMA)
             conn.executescript(FTS_TRIGGERS)
             conn.executescript(VIEWS)
-
-        conn.execute(
-            "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
-            ("schema_version", str(SCHEMA_VERSION))
-        )
+            conn.execute(
+                "INSERT INTO metadata VALUES (?, ?)",
+                ("schema_version", str(SCHEMA_VERSION))
+            )
 
         if metadata:
             for k, v in metadata.items():
@@ -752,11 +832,6 @@ def get_schema_version(db_path: Path) -> Optional[int]:
     """Get the schema version of an existing database."""
     conn = sqlite3.connect(str(db_path))
     try:
-        row = conn.execute(
-            "SELECT value FROM metadata WHERE key = 'schema_version'"
-        ).fetchone()
-        return int(row[0]) if row else None
-    except (sqlite3.OperationalError, TypeError):
-        return None
+        return _read_schema_version(conn)
     finally:
         conn.close()
