@@ -37,7 +37,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | PARSER-03/04/05, PHI-01/02 | #47 | Hostile-input: FIFO hang, non-UTF-8 abort, JSON RecursionError, gzip-tar decompression, invalid IPs |
 | CI-REL-01 | #49 | CI editable-only, mutable action pins, no dependency scan |
 | DOC-REL-01/03 | #29 | schema.sql (v4) / ARCHITECTURE (v5) stale; version identity incoherent |
-| DM-06 | *ticket pending* | Fresh-vs-migrated schema divergence: a migrated v6 DB can lack FTS(files/daemons), the 3 views, and base indexes that no `migrate_*` recreates |
+| DM-06 | #51 | Fresh-vs-migrated schema divergence: migrated v6 entity tables lack the `source_version_id`→`versions(id)` FK (ALTER can't add REFERENCES) |
 
 ## Low / informational
 
