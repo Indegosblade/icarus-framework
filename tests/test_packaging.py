@@ -43,20 +43,27 @@ EXPECTED = EXPECTED_YAML | EXPECTED_JSON
 
 @pytest.fixture(scope="module")
 def built_dists(tmp_path_factory):
+    # `build` is a declared dev dependency, so a build that RUNS and FAILS is a real
+    # failure, not a reason to skip: skipping a failed build would let a broken
+    # package pass green — exactly the defect these tests guard. The module-level
+    # importorskip only skips when the build tool itself is absent.
     out = tmp_path_factory.mktemp("dist")
     try:
-        subprocess.run(
+        proc = subprocess.run(
             [sys.executable, "-m", "build", "--no-isolation",
              "--outdir", str(out), str(REPO_ROOT)],
-            check=True, capture_output=True, text=True,
+            capture_output=True, text=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        detail = getattr(exc, "stderr", "") or ""
-        pytest.skip(f"could not build distributions: {exc}\n{detail[-500:]}")
+    except FileNotFoundError as exc:  # interpreter cannot run `-m build`
+        pytest.fail(f"could not invoke `python -m build`: {exc}")
+    if proc.returncode != 0:
+        pytest.fail(
+            f"building the distributions failed (exit {proc.returncode}):\n"
+            f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-2000:]}"
+        )
     whl = next(iter(out.glob("*.whl")), None)
     sdist = next(iter(out.glob("*.tar.gz")), None)
-    if not whl or not sdist:
-        pytest.skip("build produced no wheel/sdist")
+    assert whl and sdist, f"build succeeded but produced no wheel/sdist in {out}"
     return whl, sdist
 
 
