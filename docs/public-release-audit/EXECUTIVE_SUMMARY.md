@@ -6,6 +6,15 @@
 re-verification (27 agents, 0 errors). Every accepted finding is reproduced or
 proven from code.
 
+**Remediation status (updated):** owner decisions D1–D9 are now **answered** (see
+`DECISIONS_REQUIRED.md`). The packaging blocker **#37 is merged** to `main`
+(`fbd2fca`, CI-green while the repo was briefly public); the diff blocker (#38),
+schema-refusal (#53 → #39), foreign-key enforcement (#54 → #44), CI hardening (#52),
+and the personal-parser removal (#55 → #31/D8) are reviewed, locally verified, and
+staged as draft PRs awaiting CI. A second independent implementer (Sol / OpenAI
+Codex) authored #52/#53/#54; each was re-reviewed and reproduced here before being
+accepted.
+
 ## What ICARUS is
 
 A modular intelligence framework that ingests structured data sources and filesystem
@@ -42,14 +51,14 @@ promise.
 
 | Issue | Blocker | Status |
 |---|---|---|
-| **#32** | Wheel/sdist omit all parser manifests/schema/catalogs → installed package broken | **Fixed** in draft PR **#37** |
-| **#41** | "Sanitized" output still contains secrets: real HYGEIA never wired, fallback has no credential patterns | open |
+| **#32** | Wheel/sdist omit all parser manifests/schema/catalogs → installed package broken | **Merged** (#37, `fbd2fca`) |
+| **#41** | "Sanitized" output still contains secrets: real HYGEIA never wired, fallback has no credential patterns | open (D4 decided; fix pending) |
 | **#21** | STIX export is not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | open (escalated) |
-| **#45** | Resume with a changed `--source` silently yields the *wrong* database | open |
+| **#45** | Resume with a changed `--source` silently yields the *wrong* database | open (D2 decided; fix pending) |
 | **#43** | Parsers dereference in-root symlinks → read files outside the source tree | open |
 | **#40** | Provenance (`source_version_id`/`observed_time`) NULL on every entity | open |
-| **#39** | `initialize_database` silently relabels a future schema to v6 | open |
-| **#33** | Cross-DB diff compared local autoincrement ids → false/hidden "moves" | **Fixed** in draft PR **#38** |
+| **#39** | `initialize_database` silently relabels a future schema to v6 | **Fixed**, staged PR **#53** (verified) |
+| **#33** | Cross-DB diff compared local autoincrement ids → false/hidden "moves" | **Fixed** (`structural_diff` **and** `observation_diff`), staged PR **#38** |
 
 ### High / medium (should fix for beta)
 
@@ -58,25 +67,36 @@ build-output reuse/`--fresh` (#36), sanitization coverage/verification gaps (#42
 hostile-input hardening (#47), query mutability + exit codes (#34), CI hardening (#49),
 docs/schema drift (#29). Full ledger in `FINDINGS.md`.
 
-## Owner decisions required (see `DECISIONS_REQUIRED.md`)
+## Owner decisions — now answered (see `DECISIONS_REQUIRED.md`)
 
-Default query mutability (#34); existing-output/`--fresh` semantics (#36); resolver
-policy + beta inclusion (#46); license positioning + maturity classifier + governance
-files (#48); secret-retention/data-minimization policy (#41/#42); distribution channel
-(the HYGEIA git-URL dependency blocks PyPI); version numbering (#29).
+All nine gating decisions have been made: query read-only-by-default (D1), atomic
+`--fresh` + strict resume fingerprint (D2), resolver excluded from the beta promise
+(D3), HYGEIA-canonical fail-closed sanitization with no raw-secret retention (D4),
+Beta + source-available positioning (D5), GitHub-release-wheel distribution (D6),
+monotonic `4.0.0b1` versioning (D7), delete the personal network parsers (D8), and
+opt-in-only third-party plugin loading (D9). These now gate *implementation*, not
+further debate.
 
-## Operational blocker (account, not code)
+## Operational blocker (repository visibility, not code)
 
-New GitHub Actions runs on the private repo currently fail at startup —
-*"recent account payments have failed or your spending limit needs to be increased"*
-(Billing & plans). CI cannot verify PRs until this is resolved; it is unrelated to any
-code change. All PR verification in this audit was done locally.
+CI runs on GitHub Actions only while the repository is **public** (private-repo
+Actions are billing-gated on this account). The repo was made public long enough for
+every PR to record a green matrix, then **reverted to private**, so new runs now
+no-start (*"recent account payments have failed or your spending limit needs to be
+increased"*). This is a visibility/billing setting, unrelated to any code change; all
+verification in this audit was reproduced locally. **Merging the staged PRs requires
+the repo to be public (or private-Actions billing restored) so CI can re-run.**
 
 ## Bottom line
 
-A stranger today **cannot** safely install (packaging), **cannot** trust the output
-(false diffs, NULL provenance, invalid STIX), and **cannot** safely share it (secrets
-survive sanitization). Two of these (packaging, diff) already have verified draft
-fixes. The rest are filed, reproduced, and dependency-ordered. **Do not represent
-ICARUS as public-ready, open-source, or Production/Stable until the blocker set is
-closed.**
+Verdict remains **NO-GO** for public release today, but the blocker set is closing.
+**Install is fixed and merged** (#37). **Output-trust** is materially improved: the
+false-diff blocker is fully fixed (structural **and** observation diff, #38), a future
+schema is now refused (#39/#53), and foreign keys are enforced on every write path
+(#44/#54) — all staged and locally verified. Still open and gating a beta: **secret
+survival in "sanitized" output** (#41, the top confidentiality blocker), **NULL entity
+provenance** (#40), **invalid STIX** (#21), **symlink read-out** (#43), and
+**resume-with-changed-source** (#45). The personal network parsers are being removed
+(#55/D8). **Do not represent ICARUS as public-ready, open-source, or Production/Stable
+until the remaining blockers close; the current public visibility is a CI expedient,
+not a release.**

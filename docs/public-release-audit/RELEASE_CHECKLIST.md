@@ -7,26 +7,30 @@ green legacy suite.
 ## Public-beta gates (all required, or explicitly dropped from the promise)
 
 ### Install & package integrity
-- [ ] `python -m build` produces wheel+sdist containing all 11 parser `*.yaml`,
-      `schema/parser_manifest.schema.json`, and `catalog/*.json`. *(#32 — PR #37)*
-- [ ] Clean-venv install of the **wheel**: `icarus parser list` shows real tiers;
-      `icarus parser validate` passes; `build`/`query` complete. *(#32 — PR #37)*
-- [ ] CI has a job that builds+installs the **wheel** (not editable) and smoke-tests it.
-      *(#49 — PR #37 adds it)*
-- [ ] Distribution channel decided (PyPI needs the HYGEIA git dep resolved). *(decision)*
+- [x] `python -m build` produces wheel+sdist containing every parser `*.yaml`,
+      `schema/parser_manifest.schema.json`, and `catalog/*.json`. *(#32 — **#37 merged**;
+      now 9 manifests after #55/D8)*
+- [x] Clean-venv install of the **wheel**: `icarus parser list` shows real tiers;
+      `icarus parser validate` passes; `build`/`query` complete. *(#32 — **#37 merged**)*
+- [x] CI has a job that builds+installs the **wheel** (not editable) and smoke-tests it.
+      *(#49 — **#37 merged**; hardened further in staged #52)*
+- [x] Distribution channel decided: GitHub-release wheels for the first beta, HYGEIA
+      pinned by commit, no PyPI until the HYGEIA git dep is resolved. *(D6)*
 
 ### Correct & trustworthy output
-- [ ] Cross-database diffs use **natural keys**, never local row ids
-      (`structural_diff` **and** `observation_diff`). *(#33 — PR #38 partial)*
+- [x] Cross-database diffs use **natural keys**, never local row ids — both
+      `structural_diff` **and** `observation_diff`, plus a stable entitlement-owner
+      identity. *(#33 — staged PR #38, verified; merge pending CI)*
 - [ ] Provenance populated: every entity row has `source_version_id` + `observed_time`.
-      *(#40)*
-- [ ] `initialize_database` **refuses** a forward/newer schema version. *(#39)*
+      *(#40 — open)*
+- [x] `initialize_database` **refuses** a forward/newer/malformed/incomplete schema and
+      no longer restamps. *(#39 — staged PR #53, verified; merge pending CI)*
 - [ ] Fresh-vs-migrated parity verified at `sqlite_master` (tables/indexes/triggers/
-      views). *(#29/DM-06)*
-- [ ] Resume with a changed `--source`/`--parser` re-runs or errors — never silently
-      wrong. *(#45)*; existing-output semantics defined + atomic write. *(#36)*
-- [ ] FK enforcement ON for every write path; verify-phase `foreign_key_check` gate.
-      *(#44)*
+      views). *(#29/DM-06 — open)*
+- [ ] Resume only on exact fingerprint match, else fail loud; existing-output refused;
+      atomic `--fresh` (temp + replace). *(D2 decided; #45/#36 — fix pending)*
+- [x] FK enforcement ON for every write path; verify-phase `foreign_key_check` gate.
+      *(#44 — staged PR #54, verified; merge pending CI)*
 
 ### Hostile-input safety
 - [ ] In-root symlinks are never read through to external targets, across all reader
@@ -58,10 +62,15 @@ green legacy suite.
       (not OSI). *(#48)*
 - [ ] `SECURITY.md` with an approved disclosure channel; CONTRIBUTING/CHANGELOG present.
       *(#48)*
-- [ ] CI actions SHA-pinned or Dependabot-managed; dependency scan runs. *(#49)*
+- [x] CI actions SHA-pinned + Dependabot-managed; dependency scan (`pip-audit`) runs;
+      read-only token; full failure surface. *(#49 — staged PR #52, verified; merge pending CI)*
 
 ### Operational
-- [ ] GitHub Actions billing restored so CI can actually run (account setting).
+- [ ] Repository **public** (or private-Actions billing restored) so CI can run and the
+      staged blocker PRs can merge on a green matrix. The repo was public long enough for
+      every PR to record a green run, then reverted to private (new runs now no-start).
+      *(visibility/billing setting — owner action)*
+- [ ] Personal network parsers removed from the distribution. *(#31/D8 — staged PR #55, verified)*
 
 ## Stable gates (in addition)
 
@@ -75,4 +84,8 @@ green legacy suite.
 
 Each box maps to an issue with a reproduction and acceptance criteria. "Done" =
 that reproduction now yields the acceptance outcome **on the built artifact**, plus a
-regression test, plus (once billing is restored) a green CI wheel job.
+regression test, plus a green CI matrix. Boxes checked above marked "staged PR … merge
+pending CI" have met the reproduction + regression-test bar and passed a green public
+run at least once, but are **not merged**; they finalize when the repo is public again
+and CI re-runs on the merge. A green matrix is necessary, not sufficient — negative
+paths and semantics were reviewed by hand.

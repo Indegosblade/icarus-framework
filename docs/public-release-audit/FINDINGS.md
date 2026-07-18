@@ -1,8 +1,11 @@
 # ICARUS Public-Release Audit — Findings Ledger
 
 Canonical, deduplicated ledger. Every entry is reproduced or proven from code and
-(where high/blocker) independently skeptic-verified. **Nothing here is marked "fixed"
-unless the fix is merged** — the two draft PRs are *proposed* fixes, not merged.
+(where high/blocker) independently skeptic-verified. Status legend: **MERGED** = on
+`main`; **fixed, staged PR** = implemented, locally verified (full suite + reproduction),
+and pushed as a draft PR awaiting CI before merge (CI is visibility-gated — see the
+release checklist); **open** = not yet implemented (the governing owner decision, where
+one applies, is noted).
 
 Severity uses the skeptic-corrected value where it differs from first report.
 
@@ -10,20 +13,20 @@ Severity uses the skeptic-corrected value where it differs from first report.
 
 | ID | Issue | Title | Status |
 |---|---|---|---|
-| PKG-01 | #32 | Wheel/sdist omit all parser manifests, JSON Schema, catalogs | proposed fix PR #37 |
-| SAN-01/02/03 | #41 | Sanitized output still contains secrets (HYGEIA never wired; fallback has no credential patterns) | open |
+| PKG-01 | #32 | Wheel/sdist omit all parser manifests, JSON Schema, catalogs | **MERGED** (#37, `fbd2fca`) |
+| SAN-01/02/03 | #41 | Sanitized output still contains secrets (HYGEIA never wired; fallback has no credential patterns) | open — D4 decided, fix pending (top blocker) |
 
 ## High
 
 | ID | Issue | Title | Status |
 |---|---|---|---|
-| DIFF-01 | #33 | Cross-DB diff compared local autoincrement ids → false/hidden moves | proposed fix PR #38 (structural_diff); observation_diff pending |
+| DIFF-01 | #33 | Cross-DB diff compared local autoincrement ids → false/hidden moves | **fixed** (structural_diff **and** observation_diff), staged PR #38 |
 | STIX-01…08 | #21 | STIX export not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | open (escalated) |
-| DM-03 | #45 | Resume with changed `--source`/`--parser` → wrong database | open |
+| DM-03 | #45 | Resume with changed `--source`/`--parser` → wrong database | open — D2 decided, fix pending |
 | PARSER-01/02 | #43 | Parsers dereference in-root symlinks → read outside the source tree | open |
 | PROV-01 (DM-01) | #40 | Provenance NULL on every entity despite finalized versions row | open |
-| SCHEMA-01 (DM-05) | #39 | `initialize_database` silently relabels a future schema to v6 | open |
-| ER-01…10 | #46 | Entity-resolver invariants unsound (experimental) | open (epic) |
+| SCHEMA-01 (DM-05) | #39 | `initialize_database` silently relabels a future schema to v6 | **fixed**, staged PR #53 (verified) |
+| ER-01…10 | #46 | Entity-resolver invariants unsound (experimental) | open (epic) — D3: excluded from beta promise |
 
 ## Medium
 
@@ -33,7 +36,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | DIFF-02 | #35 | `full_diff` incomplete; NULL-hash blind spot; report not escaped |
 | BUILD-01 (DM-04) | #36 | Existing-output reuse/union; `--fresh` misnomer; no atomic write *(owner decision)* |
 | SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) |
-| DM-02 | #44 | FK enforcement OFF on all parser/pipeline write paths |
+| DM-02 | #44 | FK enforcement OFF on all parser/pipeline write paths — **fixed**, staged PR #54 (verify-phase `foreign_key_check` gate) |
 | PARSER-03/04/05, PHI-01/02 | #47 | Hostile-input: FIFO hang, non-UTF-8 abort, JSON RecursionError, gzip-tar decompression, invalid IPs |
 | CI-REL-01 | #49 | CI editable-only, mutable action pins, no dependency scan |
 | DOC-REL-01/03 | #29 | schema.sql (v4) / ARCHITECTURE (v5) stale; version identity incoherent |
@@ -55,7 +58,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 `identify()` size cap (+ PHI-01 RecursionError) · #26 inflated entity counts · #27
 test harness skips relationships · #28 json_parser properties / windows PE-magic ·
 #30 hygiene (merge_bags PK = ER-02, threshold = ER-07) · #31 privacy_stack stores raw
-credential (root cause = #41).
+credential (root cause = #41) — **resolved by deletion** in staged PR #55 (decision D8).
 
 ## Rejected / re-scoped leads
 

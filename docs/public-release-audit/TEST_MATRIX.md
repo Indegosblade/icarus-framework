@@ -7,7 +7,7 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 | Contract | Coverage | Note |
 |---|---|---|
 | Built wheel/sdist ship runtime data | 🔧 `tests/test_packaging.py` (PR #37) | builds artifacts, asserts 14 data files |
-| Installed CLI works from the wheel | ❌ → 🔧 CI `package` job (PR #37) | no source-tree tests exercise the wheel |
+| Installed CLI works from the wheel | 🔧 CI `package` job (**#37 merged**) | installs the wheel, smoke-tests CLI off the source tree |
 | `icarus parser test` fixtures ship | ❌ | fixtures in neither artifact (#32) |
 
 ## Schema, migrations, provenance, connections
@@ -15,9 +15,9 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 |---|---|---|
 | Fresh v6 init | ✅ `test_schema_init_and_fts` | |
 | Fresh-vs-migrated parity (sqlite_master) | ❌ | no cross-check; divergence (#29/DM-06) |
-| Forward-version refusal | ❌ | silently relabels (#39) |
+| Forward-version refusal | 🔧 (#53) | refuses future/malformed/incomplete; 5 negative-path tests (#39) |
 | Entity provenance populated | ⚠️→❌ | tests check columns exist, not that they're set (#40) |
-| FK enforced on write paths | ❌ | off on every parser write (#44) |
+| FK enforced on write paths | 🔧 (#54) | open_db on every write path + `foreign_key_check` gate; adversarial tests (#44) |
 | FTS sync on update/delete | ⚠️ | `atoms` has no update trigger (#42/SAN-09) |
 | Checkpoint resume identity | ⚠️ | `test_pipeline_checkpoint_resume` covers clear-on-success, not source-change (#45) |
 | Existing-output semantics | ❌ | union/no-atomic (#36) |
@@ -36,7 +36,7 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 |---|---|---|
 | add/remove/changed on natural keys | ✅ | correct |
 | structural diff by natural key | 🔧 `test_diff_natural_keys.py` (PR #38) | 3 bug-encoding tests corrected |
-| observation diff by natural key | ❌ | still local-id (#33) |
+| observation diff by natural key | 🔧 (#38) | resolves entity_id→natural key per table; insertion-order-skew test (#33) |
 | `full_diff` covers documented tables | ❌ | omits most (#35) |
 | report escapes hostile values | ❌ | (#35) |
 
