@@ -1084,9 +1084,9 @@ def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
     initialize_database(db2)
 
     # Referenced profiles and binaries must exist so the diff can resolve each
-    # foreign key to its natural key (profile name / binary file path). The
+    # foreign key to its natural key (profile name / binary identity). The
     # reassignment is expressed by pointing at a differently-named profile and a
-    # different binary file, not by a raw id change.
+    # different binary (distinct executable_name), not by a raw id change.
     conn = sqlite3.connect(str(db1))
     conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.A')")  # id 1
     conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.B')")  # id 2
@@ -1125,8 +1125,8 @@ def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
     by_type = {c["type"]: c for c in result.structural}
     assert by_type["sandbox_rule_reassigned"]["old_value"] == "profile.A"
     assert by_type["sandbox_rule_reassigned"]["new_value"] == "profile.B"
-    assert by_type["entitlement_reassigned"]["old_value"] == "/bin/appA"
-    assert by_type["entitlement_reassigned"]["new_value"] == "/bin/appB"
+    assert by_type["entitlement_reassigned"]["old_value"] == "appA"
+    assert by_type["entitlement_reassigned"]["new_value"] == "appB"
 
 
 def test_structural_diff_dedupes_no_cartesian(two_dbs):
