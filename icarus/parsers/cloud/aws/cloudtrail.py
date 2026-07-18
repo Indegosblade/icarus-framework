@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BaseParser
 
 # CloudTrail exports can be very large; do not read a single file bigger than
@@ -45,7 +46,7 @@ class CloudTrailParser(BaseParser):
     def extract_entities(
         self, source: Path, db_path: Path
     ) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         stats = {"files": 0, "daemons": 0, "observations": 0}
         try:
             for dirpath, _, filenames in os.walk(

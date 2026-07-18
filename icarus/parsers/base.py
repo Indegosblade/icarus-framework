@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from icarus.core.schema import open_db
+
 MAX_HASH_FILE_SIZE = 50_000_000
 BATCH_COMMIT_INTERVAL = 50_000
 
@@ -78,7 +80,7 @@ class BaseParser(ABC):
         Override to add parser-specific verification. Default
         checks that core tables have rows.
         """
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             tables = ["files", "binaries"]
             stats = {}

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BaseParser
 from icarus.parsers.manifest import ParserManifest
 
@@ -50,7 +51,7 @@ class ParserTestHarness:
         db_path = self._run_parser()
 
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = open_db(db_path)
             try:
                 actual_counts = {}
                 for table in golden.get("entity_counts", {}):
@@ -157,7 +158,7 @@ class ParserTestHarness:
         observation.event_type produced on the fixture is one of them."""
         db_path = self._run_parser()
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = open_db(db_path)
             try:
                 declared = set(self.manifest.entity_types)
                 violations = []
@@ -207,7 +208,7 @@ class ParserTestHarness:
         """Run parser twice on same fixture, second run should add 0 new rows."""
         db_path = self._run_parser()
         try:
-            conn = sqlite3.connect(str(db_path))
+            conn = open_db(db_path)
             try:
                 counts_first = {}
                 for table in self.manifest.entity_types:
@@ -222,7 +223,7 @@ class ParserTestHarness:
 
             self.parser.extract_entities(self.fixtures_dir, db_path)
 
-            conn = sqlite3.connect(str(db_path))
+            conn = open_db(db_path)
             try:
                 counts_second = {}
                 for table in self.manifest.entity_types:
