@@ -1,0 +1,5 @@
+# Runtime data files that must ship in the sdist (and therefore the wheel, which is
+# built from the sdist): parser manifests, the manifest JSON Schema, and catalogs.
+recursive-include icarus *.yaml
+recursive-include icarus *.json
+include icarus/py.typed
