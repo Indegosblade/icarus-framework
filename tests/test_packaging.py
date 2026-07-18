@@ -46,12 +46,20 @@ def built_dists(tmp_path_factory):
     # `build` is a declared dev dependency, so a build that RUNS and FAILS is a real
     # failure, not a reason to skip: skipping a failed build would let a broken
     # package pass green — exactly the defect these tests guard. The module-level
-    # importorskip only skips when the build tool itself is absent.
+    # importorskip only skips when the build tool itself is absent. Use build
+    # isolation so the declared PEP 517 backend requirements are installed on every
+    # runner; setup-python does not guarantee setuptools is present in the test env.
     out = tmp_path_factory.mktemp("dist")
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "build", "--no-isolation",
-             "--outdir", str(out), str(REPO_ROOT)],
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--outdir",
+                str(out),
+                str(REPO_ROOT),
+            ],
             capture_output=True, text=True,
         )
     except FileNotFoundError as exc:  # interpreter cannot run `-m build`
