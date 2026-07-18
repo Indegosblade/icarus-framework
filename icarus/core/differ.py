@@ -218,13 +218,16 @@ class IcarusDiffer:
         """
         structural_changes = []
 
-        # Binaries whose parent file changed.
-        # executable_name is not unique, so restrict to names that identify
-        # exactly one binary on each side; otherwise the join Cartesian-products
-        # duplicates into false "moved" rows. Ambiguous names are skipped.
+        # Binaries whose parent file changed. Compare the file's NATURAL key
+        # (files.path), never file_id: file_id is a local autoincrement id assigned
+        # independently in each database, so comparing it fabricates "moved" rows
+        # from mere insertion-order skew and hides real moves when ids coincide.
+        # executable_name is not unique, so restrict to names that identify exactly
+        # one binary on each side; otherwise the join Cartesian-products duplicates
+        # into false rows. Ambiguous names are skipped.
         rows = self.conn.execute("""
             SELECT n.executable_name,
-                   n.file_id AS new_file_id, o.file_id AS old_file_id
+                   nf.path AS new_path, of.path AS old_path
             FROM (
                 SELECT executable_name, file_id FROM main.binaries
                 WHERE executable_name IS NOT NULL
@@ -235,25 +238,29 @@ class IcarusDiffer:
                 WHERE executable_name IS NOT NULL
                 GROUP BY executable_name HAVING COUNT(*) = 1
             ) o ON n.executable_name = o.executable_name
-            WHERE n.file_id IS NOT o.file_id
+            JOIN main.files nf ON nf.id = n.file_id
+            JOIN old_db.files of ON of.id = o.file_id
+            WHERE nf.path IS NOT of.path
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "binary_file_moved",
                 "entity": r.get("executable_name"),
-                "old_value": r.get("old_file_id"),
-                "new_value": r.get("new_file_id"),
-                "description": f"binary '{r.get('executable_name')}' file_id: "
-                               f"{r.get('old_file_id')} -> {r.get('new_file_id')}",
+                "old_value": r.get("old_path"),
+                "new_value": r.get("new_path"),
+                "description": f"binary '{r.get('executable_name')}' file: "
+                               f"{r.get('old_path')} -> {r.get('new_path')}",
             })
 
-        # Sandbox rules whose profile assignment changed.
-        # (operation, action) is not unique; restrict to pairs identifying
-        # exactly one rule on each side so duplicates cannot cross-product.
+        # Sandbox rules whose profile assignment changed. Compare the profile's
+        # NATURAL key (sandbox_profiles.name), not profile_id (a local autoincrement
+        # id with no cross-database meaning). (operation, action) is not unique;
+        # restrict to pairs identifying exactly one rule on each side so duplicates
+        # cannot cross-product.
         rows = self.conn.execute("""
             SELECT n.operation, n.action,
-                   n.profile_id AS new_pid, o.profile_id AS old_pid
+                   np.name AS new_profile, op.name AS old_profile
             FROM (
                 SELECT operation, action, profile_id FROM main.sandbox_rules
                 GROUP BY operation, action HAVING COUNT(*) = 1
@@ -262,26 +269,30 @@ class IcarusDiffer:
                 SELECT operation, action, profile_id FROM old_db.sandbox_rules
                 GROUP BY operation, action HAVING COUNT(*) = 1
             ) o ON n.operation = o.operation AND n.action = o.action
-            WHERE n.profile_id IS NOT o.profile_id
+            JOIN main.sandbox_profiles np ON np.id = n.profile_id
+            JOIN old_db.sandbox_profiles op ON op.id = o.profile_id
+            WHERE np.name IS NOT op.name
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "sandbox_rule_reassigned",
                 "entity": f"{r.get('operation')}:{r.get('action')}",
-                "old_value": r.get("old_pid"),
-                "new_value": r.get("new_pid"),
+                "old_value": r.get("old_profile"),
+                "new_value": r.get("new_profile"),
                 "description": f"sandbox rule '{r.get('operation')}:{r.get('action')}' "
-                               f"profile: {r.get('old_pid')} -> {r.get('new_pid')}",
+                               f"profile: {r.get('old_profile')} -> {r.get('new_profile')}",
             })
 
-        # Entitlements whose binary assignment changed (same key+value,
-        # different binary). (key, value) is not unique; restrict to pairs
-        # identifying exactly one entitlement on each side so duplicates
-        # cannot cross-product into false "reassigned" rows.
+        # Entitlements whose binary assignment changed (same key+value, different
+        # binary). Compare the binary's NATURAL key (its file path via
+        # binaries.file_id -> files.path), not binary_id (a local autoincrement id
+        # with no cross-database meaning). (key, value) is not unique; restrict to
+        # pairs identifying exactly one entitlement on each side so duplicates cannot
+        # cross-product into false "reassigned" rows.
         rows = self.conn.execute("""
             SELECT n.key, n.value,
-                   n.binary_id AS new_bid, o.binary_id AS old_bid
+                   nf.path AS new_binary, of.path AS old_binary
             FROM (
                 SELECT key, value, binary_id FROM main.entitlements
                 GROUP BY key, value HAVING COUNT(*) = 1
@@ -290,17 +301,21 @@ class IcarusDiffer:
                 SELECT key, value, binary_id FROM old_db.entitlements
                 GROUP BY key, value HAVING COUNT(*) = 1
             ) o ON n.key = o.key AND n.value = o.value
-            WHERE n.binary_id IS NOT o.binary_id
+            JOIN main.binaries nb ON nb.id = n.binary_id
+            JOIN old_db.binaries ob ON ob.id = o.binary_id
+            JOIN main.files nf ON nf.id = nb.file_id
+            JOIN old_db.files of ON of.id = ob.file_id
+            WHERE nf.path IS NOT of.path
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "entitlement_reassigned",
                 "entity": r.get("key"),
-                "old_value": r.get("old_bid"),
-                "new_value": r.get("new_bid"),
+                "old_value": r.get("old_binary"),
+                "new_value": r.get("new_binary"),
                 "description": f"entitlement '{r.get('key')}' "
-                               f"binary: {r.get('old_bid')} -> {r.get('new_bid')}",
+                               f"binary: {r.get('old_binary')} -> {r.get('new_binary')}",
             })
 
         return DiffResult(
