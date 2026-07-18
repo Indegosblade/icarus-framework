@@ -46,6 +46,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
     "bandit>=1.7",
+    "build>=1.0",
 ]
 
 [tool.ruff]
@@ -82,4 +83,17 @@ skips = ["B101", "B110", "B112", "B404", "B603", "B607"]
 include = ["icarus*"]
 
 [tool.setuptools.package-data]
+# Parser manifests, the manifest JSON Schema, and the parser catalogs are runtime
+# data, not just source: the registry loads each <module>.yaml at import,
+# manifest.py reads schema/parser_manifest.schema.json, and the catalog tooling
+# reads catalog/*.json. Without these the built wheel ships only .py files, so every
+# manifest load fails and parser tiers/specificities are lost on an installed
+# package. Declared per-package (each dir is a real package) so bdist_wheel copies
+# them; MANIFEST.in carries the same files into the sdist.
 icarus = ["py.typed"]
+"icarus.parsers" = ["*.yaml"]
+"icarus.parsers.cloud.aws" = ["*.yaml"]
+"icarus.parsers.generic" = ["*.yaml"]
+"icarus.parsers.network" = ["*.yaml"]
+"icarus.parsers.schema" = ["*.json"]
+"icarus.parsers.catalog" = ["*.json"]

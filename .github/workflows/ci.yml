@@ -41,3 +41,29 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: bandit -r icarus/ -c pyproject.toml
+
+  package:
+    # Builds the distribution and exercises the INSTALLED wheel (not an editable
+    # install), so a packaging regression that drops runtime data files — parser
+    # manifests, the manifest JSON Schema, catalogs — is caught in CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Install the built wheel into a clean environment
+        run: |
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/pip install "$(ls dist/*.whl)"
+      - name: Exercise the installed artifact (source tree not on path)
+        working-directory: /tmp
+        run: |
+          /tmp/wheelenv/bin/icarus parser list
+          /tmp/wheelenv/bin/icarus parser validate "$GITHUB_WORKSPACE/icarus/parsers/linux.yaml"
+          /tmp/wheelenv/bin/icarus build -s "$GITHUB_WORKSPACE/tests/fixtures/generic_json" -o /tmp/smoke.db
+          /tmp/wheelenv/bin/icarus query /tmp/smoke.db --stats
