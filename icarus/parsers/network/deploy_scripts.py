@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 # ---------------------------------------------------------------------------
@@ -230,7 +231,7 @@ class DeployScriptsParser(BaseParser):
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
         """Walk source tree and extract files, daemons, observations,
         and entitlements from deploy scripts."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         now = datetime.now(timezone.utc).isoformat()
         stats = {
             "files": 0,
@@ -413,7 +414,7 @@ class DeployScriptsParser(BaseParser):
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
         """Link scripts to the daemons they manage via observations."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         linked = 0
         now = datetime.now(timezone.utc).isoformat()
         try:
@@ -467,7 +468,7 @@ class DeployScriptsParser(BaseParser):
 
     def verify(self, db_path: Path) -> Dict[str, Any]:
         """Verify extraction produced expected entities."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             stats = {}
             for table in ("files", "daemons", "observations", "entitlements"):

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 # ---------------------------------------------------------------------------
@@ -202,7 +203,7 @@ class PrivacyStackParser(BaseParser):
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
         """Walk source tree and extract files, daemons, entitlements,
         observations, and frameworks into the ICARUS database."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         now = datetime.now(timezone.utc).isoformat()
         stats = {
             "files": 0,
@@ -420,7 +421,7 @@ class PrivacyStackParser(BaseParser):
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
         """Link daemons to their config files via observations."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         linked = 0
         now = datetime.now(timezone.utc).isoformat()
         try:
@@ -466,7 +467,7 @@ class PrivacyStackParser(BaseParser):
 
     def verify(self, db_path: Path) -> Dict[str, Any]:
         """Verify extraction produced expected entities."""
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             stats = {}
             for table in ("files", "daemons", "entitlements",

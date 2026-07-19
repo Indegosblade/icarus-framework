@@ -7,11 +7,11 @@ parses systemd units, and inventories shared libraries.
 
 import os
 import re
-import sqlite3
 import struct
 from pathlib import Path
 from typing import Any, Dict
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser, link_daemons_to_binaries
 
 ELF_MAGIC = b"\x7fELF"
@@ -40,7 +40,7 @@ class LinuxParser(BaseParser):
         return ["readelf"]
 
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         stats = {"files": 0, "binaries": 0, "daemons": 0, "frameworks": 0}
         try:
             for dirpath, _, filenames in os.walk(source, onerror=lambda e: None):
@@ -110,7 +110,7 @@ class LinuxParser(BaseParser):
         return stats
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             linked = link_daemons_to_binaries(conn)
             conn.commit()
