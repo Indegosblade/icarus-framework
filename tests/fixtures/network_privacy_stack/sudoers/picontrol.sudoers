@@ -1,2 +1,0 @@
-# Allow the dashboard service account to control units without a password.
-www-data ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart picontrol, /usr/bin/systemctl start unbound

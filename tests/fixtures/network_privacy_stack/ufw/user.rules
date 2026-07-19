@@ -1,2 +1,0 @@
-### tuple ### allow udp 51820 0.0.0.0/0 any 0.0.0.0/0
-### tuple ### allow tcp 5001 0.0.0.0/0 any 0.0.0.0/0
