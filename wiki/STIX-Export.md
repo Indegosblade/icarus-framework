@@ -10,7 +10,12 @@ ICARUS maps entities and diffs to STIX 2.1 objects for interoperability with thr
 | binaries | File SCO (with x_icarus_binary extension) | `file` |
 | daemons | Infrastructure SDO | `infrastructure` |
 | entitlements | Course of Action SDO | `course-of-action` |
-| observations | Observed Data SDO | `observed-data` |
+| file/binary observations | Observed Data SDO | `observed-data` |
+| daemon/entitlement observations | Sighting SRO | `sighting` |
+
+Observation exports automatically include their referenced entity object,
+even when `include_tables=["observations"]` is used. A missing or unsupported
+target fails the export instead of producing a dangling reference.
 
 ## Usage
 
@@ -51,7 +56,6 @@ Output is a standard STIX 2.1 bundle:
 {
   "type": "bundle",
   "id": "bundle--<deterministic-uuid>",
-  "spec_version": "2.1",
   "objects": [
     {
       "type": "file",
@@ -65,7 +69,8 @@ Output is a standard STIX 2.1 bundle:
 }
 ```
 
-IDs are deterministic — same input produces the same STIX IDs. This makes bundles diffable and deduplicable.
+Object IDs are deterministic RFC 4122 UUIDv5 identifiers — the same input row
+produces the same STIX ID. This makes bundles diffable and deduplicable.
 
 ## Diff Export
 
@@ -76,13 +81,16 @@ Diffs export as STIX Note objects:
   "type": "note",
   "id": "note--<deterministic-uuid>",
   "spec_version": "2.1",
+  "created": "2026-07-18T12:34:56Z",
+  "modified": "2026-07-18T12:34:56Z",
   "content": "Added in daemons: new-service",
+  "object_refs": ["software--<icarus-uuid>"],
   "x_icarus_diff_category": "addition",
   "x_icarus_diff_table": "daemons"
 }
 ```
 
-Categories: `addition` and `deletion`.
+Categories: `addition`, `deletion`, `property_change`, and `structural`.
 
 ## Custom Extensions
 
@@ -94,8 +102,11 @@ ICARUS-specific data uses `x_icarus_` prefixed properties:
 | `x_icarus_binary` | File SCO | arch, bundle_id |
 | `x_icarus_program` | Infrastructure SDO | Executable path |
 | `x_icarus_user_name` | Infrastructure SDO | Run-as user |
-| `x_icarus_entity_table` | Observed Data SDO | Source ontology table |
-| `x_icarus_entity_id` | Observed Data SDO | Source entity row ID |
-| `x_icarus_event_type` | Observed Data SDO | Observation event type |
-| `x_icarus_diff_category` | Note SDO | addition or deletion |
+| `x_icarus_entity_table` | Observed Data / Sighting | Source ontology table |
+| `x_icarus_entity_id` | Observed Data / Sighting | Source entity row ID |
+| `x_icarus_event_type` | Observed Data / Sighting | Observation event type |
+| `x_icarus_diff_category` | Note SDO | Diff category |
 | `x_icarus_diff_table` | Note SDO | Source diff table |
+
+Because ICARUS uses custom `x_icarus_*` properties, consumers using the OASIS
+Python library should parse with `stix2.parse(bundle, allow_custom=True)`.
