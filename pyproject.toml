@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["intelligence", "analysis", "sqlite", "diffing", "security", "ontology", "entities"]
 dependencies = [
-    "hygeia @ git+https://github.com/Indegosblade/HYGEIA.git@v3.14.0",
+    "hygeia @ git+https://github.com/Indegosblade/HYGEIA.git@518e55b48036844808f911613727cd7a7c1d4e0d",
     "pyyaml>=6.0",
     "jsonschema>=4.20",
 ]
