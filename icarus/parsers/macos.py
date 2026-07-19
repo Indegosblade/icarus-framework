@@ -27,6 +27,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser, link_daemons_to_binaries
 from icarus.parsers.macho import is_macho_magic, macho_info
 
@@ -122,7 +123,7 @@ class MacosParser(BaseParser):
         return sum(1 for m in markers if m.is_dir()) >= 2
 
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         stats = {
             "files": 0, "binaries": 0, "daemons": 0, "mach_services": 0,
             "entitlements": 0, "kexts": 0, "frameworks": 0, "sandbox_profiles": 0,
@@ -380,7 +381,7 @@ class MacosParser(BaseParser):
     # ── Relationships: daemon -> executable binary ──
 
     def extract_relationships(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             linked = link_daemons_to_binaries(conn)
             conn.commit()
@@ -389,7 +390,7 @@ class MacosParser(BaseParser):
         return {"linked": linked}
 
     def verify(self, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         try:
             stats = {}
             for table in ("files", "binaries", "daemons", "mach_services",

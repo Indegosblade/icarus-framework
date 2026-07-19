@@ -2,10 +2,10 @@
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
+from icarus.core.schema import open_db
 from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 # Do not read files larger than this fully into memory to parse keys.
@@ -31,7 +31,7 @@ class JsonParser(BaseParser):
         return False
 
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:
-        conn = sqlite3.connect(str(db_path))
+        conn = open_db(db_path)
         stats = {"files": 0}
         try:
             for dirpath, _, filenames in os.walk(source, onerror=lambda e: None):

@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
+from icarus.core.schema import open_db
+
 
 class PipelinePhase:
     """A single processing phase."""
@@ -140,7 +142,7 @@ class Pipeline:
         if not self.output.exists():
             from icarus.core.schema import initialize_database
             initialize_database(self.output)
-        conn = sqlite3.connect(str(self.output))
+        conn = open_db(self.output)
         try:
             conn.execute("""
                 INSERT OR IGNORE INTO versions (run_id, parser_name, source_path, started_at)
@@ -166,7 +168,7 @@ class Pipeline:
         """Update the version record with entity count and completion timestamp."""
         if not self.output.exists() or not self.context.version_id:
             return
-        conn = sqlite3.connect(str(self.output))
+        conn = open_db(self.output)
         try:
             ingest_stats = self.context.stats.get("ingest", {})
             entity_count = sum(
@@ -268,7 +270,7 @@ def create_default_pipeline(
         "relationships",
         lambda ctx: parser.extract_relationships(ctx.source, ctx.output_db),
         "Map relationships between entities")
-    pipeline.add_phase("verify", lambda ctx: parser.verify(ctx.output_db),
+    pipeline.add_phase("verify", lambda ctx: _verify_phase(ctx, parser),
                        "Quality gates and verification")
 
     if resolve:
@@ -289,6 +291,27 @@ def create_default_pipeline(
                            "HYGEIA sanitization pass")
 
     return pipeline
+
+
+def _verify_phase(ctx, parser) -> dict:
+    """Run parser checks, then enforce relational integrity for every build."""
+    stats = dict(parser.verify(ctx.output_db) or {})
+    conn = open_db(ctx.output_db)
+    try:
+        violation = conn.execute("PRAGMA foreign_key_check").fetchone()
+    finally:
+        conn.close()
+
+    if violation is not None:
+        table, rowid, parent, constraint_index = violation
+        raise ValueError(
+            "Verification failed: foreign key violation "
+            f"in table {table!r}, rowid {rowid!r}, parent {parent!r}, "
+            f"constraint {constraint_index!r}"
+        )
+
+    stats["foreign_key_violations"] = 0
+    return stats
 
 
 def _resolve_phase(ctx) -> dict:
@@ -316,7 +339,7 @@ def _resolve_phase(ctx) -> dict:
 
 def _mark_hygeia_skipped(ctx) -> dict:
     """Record in metadata that HYGEIA was explicitly skipped."""
-    conn = sqlite3.connect(str(ctx.output_db))
+    conn = open_db(ctx.output_db)
     try:
         conn.execute(
             "INSERT OR REPLACE INTO metadata VALUES (?, ?)",
