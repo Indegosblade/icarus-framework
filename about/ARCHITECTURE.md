@@ -123,9 +123,10 @@ ICARUS entities map to STIX 2.1 objects:
 - `binaries` -> File SCO with extensions
 - `daemons` -> Infrastructure SDO
 - `entitlements` -> Course of Action SDO
-- `observations` -> Observed Data SDO
+- `observations` -> Observed Data SDO for SCO targets; Sighting SRO for SDO targets
 
-Diffs export as STIX Note objects with addition/deletion classification.
+Diffs export as STIX Note objects with addition, deletion, property-change,
+and structural classifications.
 
 ---
 

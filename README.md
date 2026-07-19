@@ -244,7 +244,7 @@ See [wiki/Schema-Reference](wiki/Schema-Reference.md) for full column definition
 
 **PII sanitization** — [HYGEIA](https://github.com/Indegosblade/HYGEIA) runs as a pipeline phase. PII is stripped before the database is marked complete, not as a separate post-processing step.
 
-**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects, each carrying the spec-required `created`/`modified` timestamps; observed-data SDOs carry valid `object_refs`. Diffs map to STIX Note objects across all four diff categories (addition, deletion, change, structural). Deterministic IDs make bundles diffable.
+**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects. File/binary observations become Observed Data over SCO references; daemon/entitlement observations become Sighting relationships to their SDOs. Every reference resolves within the bundle, timestamps are normalized to UTC, and RFC 4122 UUIDv5 identifiers remain deterministic. Diffs map to complete STIX Note objects across all four diff categories (addition, deletion, change, structural).
 
 See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and extension points.
 

@@ -4,21 +4,23 @@ import json
 import re
 import sqlite3
 import tempfile
+import uuid
 from pathlib import Path
 
+import pytest
+
 from icarus.core.schema import initialize_database
-from icarus.integrations.stix_export import _entity_ref, diff_to_stix, export_to_stix
+from icarus.integrations.stix_export import (
+    _entity_ref,
+    _stix_timestamp,
+    diff_to_stix,
+    export_to_stix,
+)
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "windows"
 
 # RFC 3339 UTC timestamp ending in 'Z', as STIX 2.1 requires for created/modified.
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
-
-# STIX 2.1 identifier: <type>--<uuid>
-STIX_ID_RE = re.compile(
-    r"^[a-z0-9][a-z0-9-]*--[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
-
 
 def _build_db():
     """Build a small ICARUS database from windows fixtures for STIX testing."""
@@ -192,12 +194,14 @@ def test_stix_diff_export_includes_structural_change():
         out.unlink(missing_ok=True)
 
 
-def test_stix_bundle_has_spec_version():
+def test_stix_objects_have_spec_version_but_bundle_does_not():
     db = _build_db()
     out = Path(tempfile.mktemp(suffix=".json"))
     try:
         bundle = export_to_stix(db, out)
-        assert bundle["spec_version"] == "2.1"
+        # A Bundle is an envelope rather than a STIX Object and therefore
+        # does not carry the common spec_version property.
+        assert "spec_version" not in bundle
         for obj in bundle["objects"]:
             assert obj["spec_version"] == "2.1"
     finally:
@@ -244,9 +248,8 @@ def test_stix_entitlement_sdo_has_created_and_modified():
         out.unlink(missing_ok=True)
 
 
-def test_stix_observed_data_has_created_modified_and_object_refs():
-    """Finding #53: observed-data must carry created/modified and a valid
-    object_refs pointing at the referenced SCO/SDO."""
+def test_stix_daemon_observation_becomes_sighting_with_resolved_ref():
+    """An SDO observation is a Sighting, not observed-data over an SDO ref."""
     db = _build_db()
     out = Path(tempfile.mktemp(suffix=".json"))
     try:
@@ -264,19 +267,155 @@ def test_stix_observed_data_has_created_modified_and_object_refs():
         conn.close()
 
         bundle = export_to_stix(db, out, include_tables=["observations"])
-        observed = [o for o in bundle["objects"] if o["type"] == "observed-data"]
-        assert len(observed) == 1
-        obj = observed[0]
+        sightings = [o for o in bundle["objects"] if o["type"] == "sighting"]
+        assert len(sightings) == 1
+        obj = sightings[0]
 
         assert TIMESTAMP_RE.match(obj.get("created", "")), obj.get("created")
         assert TIMESTAMP_RE.match(obj.get("modified", "")), obj.get("modified")
+        assert TIMESTAMP_RE.match(obj.get("first_seen", "")), obj.get("first_seen")
+        assert TIMESTAMP_RE.match(obj.get("last_seen", "")), obj.get("last_seen")
+        assert obj["sighting_of_ref"] == _entity_ref("daemons", daemon_id)
+        assert obj["sighting_of_ref"] in {o["id"] for o in bundle["objects"]}
+    finally:
+        db.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
 
-        assert "object_refs" in obj
-        assert obj["object_refs"], "object_refs must not be empty"
-        for ref in obj["object_refs"]:
-            assert STIX_ID_RE.match(ref), ref
-        # Must point at the daemon this observation is actually about.
-        assert obj["object_refs"] == [_entity_ref("daemons", daemon_id)]
+
+def _strict_parse(bundle):
+    stix2 = pytest.importorskip("stix2")
+    return stix2.parse(json.dumps(bundle), allow_custom=True)
+
+
+def test_entity_bundle_passes_strict_parser_and_graph_checks():
+    """#21: strict parsing, unique ids, resolved refs, and both ref models."""
+    db = _build_db()
+    out = Path(tempfile.mktemp(suffix=".json"))
+    try:
+        conn = sqlite3.connect(str(db))
+        file_id = conn.execute("SELECT id FROM files ORDER BY id LIMIT 1").fetchone()[0]
+        daemon_id = conn.execute(
+            "SELECT id FROM daemons WHERE label = ?", ("test-daemon",)
+        ).fetchone()[0]
+        binary_ids = [
+            row[0]
+            for row in conn.execute("SELECT id FROM binaries ORDER BY id LIMIT 2").fetchall()
+        ]
+        if len(binary_ids) < 2:
+            cursor = conn.execute(
+                "INSERT INTO files (path, filename, file_type) VALUES (?, ?, ?)",
+                ("/strict/second.bin", "second.bin", "binary"),
+            )
+            cursor = conn.execute(
+                "INSERT INTO binaries (file_id, executable_name) VALUES (?, ?)",
+                (cursor.lastrowid, "second.bin"),
+            )
+            binary_ids.append(cursor.lastrowid)
+
+        for binary_id in binary_ids[:2]:
+            conn.execute(
+                "INSERT INTO entitlements (binary_id, key, value) VALUES (?, ?, ?)",
+                (binary_id, "com.apple.private.same", "true"),
+            )
+
+        observed_at = "2026-07-18 12:34:56"
+        conn.execute(
+            "INSERT INTO observations "
+            "(entity_table, entity_id, observed_at, event_type) VALUES (?, ?, ?, ?)",
+            ("files", file_id, observed_at, "file_seen"),
+        )
+        for event_type in ("daemon_registered", "daemon_modified"):
+            conn.execute(
+                "INSERT INTO observations "
+                "(entity_table, entity_id, observed_at, event_type) VALUES (?, ?, ?, ?)",
+                ("daemons", daemon_id, observed_at, event_type),
+            )
+        conn.commit()
+        conn.close()
+
+        bundle = export_to_stix(db, out)
+        _strict_parse(bundle)
+
+        objects = bundle["objects"]
+        object_ids = [obj["id"] for obj in objects]
+        assert len(object_ids) == len(set(object_ids))
+        known_ids = set(object_ids)
+
+        for stix_id in [bundle["id"], *object_ids]:
+            _, uuid_text = stix_id.split("--", 1)
+            assert uuid.UUID(uuid_text).variant == uuid.RFC_4122
+
+        observed_data = [obj for obj in objects if obj["type"] == "observed-data"]
+        sightings = [obj for obj in objects if obj["type"] == "sighting"]
+        assert len(observed_data) == 1
+        assert len(sightings) == 2
+        assert all(ref in known_ids for obj in observed_data for ref in obj["object_refs"])
+        assert all(obj["sighting_of_ref"] in known_ids for obj in sightings)
+        assert all(TIMESTAMP_RE.match(obj["first_observed"]) for obj in observed_data)
+        assert all(TIMESTAMP_RE.match(obj["first_seen"]) for obj in sightings)
+
+        entitlement_ids = [
+            obj["id"] for obj in objects if obj["type"] == "course-of-action"
+        ]
+        assert len(entitlement_ids) == 2
+        assert len(set(entitlement_ids)) == 2
+    finally:
+        db.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
+
+
+def test_diff_bundle_passes_strict_parser_and_resolves_note_refs():
+    db_old = _build_db()
+    db_new = _build_db()
+    out = Path(tempfile.mktemp(suffix=".json"))
+    try:
+        conn = sqlite3.connect(str(db_new))
+        conn.execute(
+            "INSERT INTO daemons (label, plist_path) VALUES (?, ?)",
+            ("strict-new-daemon", "/strict/new.plist"),
+        )
+        conn.commit()
+        conn.close()
+
+        bundle = diff_to_stix(db_old, db_new, out)
+        _strict_parse(bundle)
+        known_ids = {obj["id"] for obj in bundle["objects"]}
+        notes = [obj for obj in bundle["objects"] if obj["type"] == "note"]
+        assert notes
+        for note in notes:
+            assert TIMESTAMP_RE.match(note["created"])
+            assert TIMESTAMP_RE.match(note["modified"])
+            assert note["object_refs"]
+            assert all(ref in known_ids for ref in note["object_refs"])
+    finally:
+        db_old.unlink(missing_ok=True)
+        db_new.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)
+
+
+def test_stix_timestamp_normalizes_offsets_and_rejects_garbage():
+    assert _stix_timestamp("2026-07-18 12:34:56") == "2026-07-18T12:34:56Z"
+    assert _stix_timestamp("2026-07-18T12:34:56+05:00") == "2026-07-18T07:34:56Z"
+    with pytest.raises(ValueError, match="Invalid timestamp"):
+        _stix_timestamp("definitely-not-a-timestamp")
+
+
+def test_stix_export_refuses_dangling_polymorphic_observation_target():
+    db = _build_db()
+    out = Path(tempfile.mktemp(suffix=".json"))
+    try:
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO observations "
+            "(entity_table, entity_id, observed_at, event_type) VALUES (?, ?, ?, ?)",
+            ("files", 999999, "2026-07-18T12:34:56Z", "missing"),
+        )
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(ValueError, match="Observation target does not exist"):
+            export_to_stix(db, out)
+        assert not out.exists()
     finally:
         db.unlink(missing_ok=True)
         out.unlink(missing_ok=True)
