@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from icarus.core.schema import open_db
+from icarus.core.schema import ENTITY_TABLES, open_db
+
+PROVENANCE_ENTITY_TABLES = (*ENTITY_TABLES, "mach_services")
 
 
 class PipelinePhase:
@@ -307,12 +309,20 @@ def create_default_pipeline(
 
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
                        "Initialize SQLite database and schema")
-    pipeline.add_phase("ingest", lambda ctx: parser.extract_entities(ctx.source, ctx.output_db),
-                       "Walk source and extract entities")
+    pipeline.add_phase(
+        "ingest",
+        lambda ctx: _run_parser_phase_with_provenance(
+            ctx, lambda: parser.extract_entities(ctx.source, ctx.output_db)
+        ),
+        "Walk source, extract entities, and stamp run provenance",
+    )
     pipeline.add_phase(
         "relationships",
-        lambda ctx: parser.extract_relationships(ctx.source, ctx.output_db),
-        "Map relationships between entities")
+        lambda ctx: _run_parser_phase_with_provenance(
+            ctx, lambda: parser.extract_relationships(ctx.source, ctx.output_db)
+        ),
+        "Map relationships and stamp run provenance",
+    )
     pipeline.add_phase("verify", lambda ctx: _verify_phase(ctx, parser),
                        "Quality gates and verification")
 
@@ -340,6 +350,80 @@ def create_default_pipeline(
                            "HYGEIA canonical sanitizer + mandatory post-gate")
 
     return pipeline
+
+
+def _capture_provenance_watermarks(db_path: Path) -> dict:
+    """Capture the highest row id present before a parser phase starts."""
+    conn = open_db(db_path)
+    try:
+        # Identifiers come exclusively from the fixed schema-owned tuple.
+        return {
+            table: conn.execute(
+                f"SELECT COALESCE(MAX(id), 0) FROM {table}"  # nosec B608
+            ).fetchone()[0]
+            for table in (*PROVENANCE_ENTITY_TABLES, "observations")
+        }
+    finally:
+        conn.close()
+
+
+def _stamp_new_provenance(ctx, watermarks: dict) -> dict:
+    """Attribute only rows inserted after the supplied phase watermarks.
+
+    This deliberately does not backfill every NULL row: doing so would claim
+    legacy/output-reuse rows as products of the current source. Rows committed
+    before a parser crash are stamped from the caller's ``finally`` block, so a
+    resumed phase cannot strand partial output without provenance.
+    """
+    if ctx.version_id is None:
+        raise RuntimeError("Cannot stamp parser output without an active versions row")
+
+    conn = open_db(ctx.output_db)
+    stamped = {}
+    try:
+        version = conn.execute(
+            "SELECT started_at FROM versions WHERE id = ?", (ctx.version_id,)
+        ).fetchone()
+        if version is None:
+            raise RuntimeError("Cannot stamp parser output: active versions row is missing")
+        observed_time = version[0]
+
+        for table in PROVENANCE_ENTITY_TABLES:
+            # The identifier comes exclusively from the fixed schema-owned tuple.
+            cursor = conn.execute(
+                f"UPDATE {table} "  # nosec B608
+                "SET source_version_id = ?, "
+                "observed_time = COALESCE(observed_time, ?) "
+                "WHERE id > ?",
+                (ctx.version_id, observed_time, watermarks[table]),
+            )
+            stamped[table] = max(cursor.rowcount, 0)
+
+        observation_cursor = conn.execute(
+            "UPDATE observations SET version_id = COALESCE(version_id, ?) WHERE id > ?",
+            (ctx.version_id, watermarks["observations"]),
+        )
+        stamped["observations"] = max(observation_cursor.rowcount, 0)
+        conn.commit()
+    finally:
+        conn.close()
+    return stamped
+
+
+def _run_parser_phase_with_provenance(ctx, handler: Callable) -> dict:
+    """Run one parser phase and stamp even rows committed before a failure."""
+    watermarks = _capture_provenance_watermarks(ctx.output_db)
+    try:
+        result = handler()
+    finally:
+        stamped = _stamp_new_provenance(ctx, watermarks)
+
+    stats = dict(result or {})
+    stats["provenance"] = {
+        "rows_stamped": stamped,
+        "total": sum(stamped.values()),
+    }
+    return stats
 
 
 def _verify_phase(ctx, parser) -> dict:
