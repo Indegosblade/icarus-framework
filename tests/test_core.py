@@ -470,7 +470,7 @@ def test_structural_diff(two_dbs):
         INSERT INTO files (path, filename, extension, size, file_type)
         VALUES ('/usr/sbin/test', 'test', '', 500, 'binary')
     """)
-    conn2.execute("INSERT INTO binaries (file_id, executable_name) VALUES (99, 'test')")
+    conn2.execute("INSERT INTO binaries (file_id, executable_name) VALUES (1, 'test')")
     conn2.commit()
     conn2.close()
 
@@ -479,6 +479,9 @@ def test_structural_diff(two_dbs):
         assert result.category == DiffCategory.STRUCTURAL
         assert len(result.structural) == 1
         assert result.structural[0]["type"] == "binary_file_moved"
+        # reported on the file's natural key (path), not the local file_id
+        assert result.structural[0]["old_value"] == "/usr/bin/test"
+        assert result.structural[0]["new_value"] == "/usr/sbin/test"
 
 
 def test_full_diff_includes_structural(two_dbs):
@@ -1185,26 +1188,38 @@ def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
     initialize_database(db1)
     initialize_database(db2)
 
+    # Referenced profiles and binaries must exist so the diff can resolve each
+    # foreign key to its natural key (profile name / binary identity). The
+    # reassignment is expressed by pointing at a differently-named profile and a
+    # different binary (distinct executable_name), not by a raw id change.
     conn = sqlite3.connect(str(db1))
+    conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.A')")  # id 1
+    conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.B')")  # id 2
     conn.execute(
         "INSERT INTO sandbox_rules (profile_id, operation, action) "
         "VALUES (1, 'file-read-data', 'allow')"
     )
+    conn.execute("INSERT INTO files (path, filename) VALUES ('/bin/appA', 'appA')")  # id 1
+    conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (1, 'appA')")  # id 1
     conn.execute(
         "INSERT INTO entitlements (binary_id, key, value) "
-        "VALUES (100, 'com.apple.security.network.client', 'true')"
+        "VALUES (1, 'com.apple.security.network.client', 'true')"
     )
     conn.commit()
     conn.close()
 
     conn = sqlite3.connect(str(db2))
-    conn.execute(  # same rule, different profile (reassigned)
+    conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.A')")  # id 1
+    conn.execute("INSERT INTO sandbox_profiles (name) VALUES ('profile.B')")  # id 2
+    conn.execute(  # same rule, now under profile.B (reassigned by profile name)
         "INSERT INTO sandbox_rules (profile_id, operation, action) "
         "VALUES (2, 'file-read-data', 'allow')"
     )
-    conn.execute(  # same entitlement, different binary (reassigned)
+    conn.execute("INSERT INTO files (path, filename) VALUES ('/bin/appB', 'appB')")  # id 1
+    conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (1, 'appB')")  # id 1
+    conn.execute(  # same entitlement, now on the appB binary (reassigned by file path)
         "INSERT INTO entitlements (binary_id, key, value) "
-        "VALUES (200, 'com.apple.security.network.client', 'true')"
+        "VALUES (1, 'com.apple.security.network.client', 'true')"
     )
     conn.commit()
     conn.close()
@@ -1213,10 +1228,10 @@ def test_structural_diff_sandbox_and_entitlement_branches(two_dbs):
         result = d.structural_diff()
 
     by_type = {c["type"]: c for c in result.structural}
-    assert by_type["sandbox_rule_reassigned"]["old_value"] == 1
-    assert by_type["sandbox_rule_reassigned"]["new_value"] == 2
-    assert by_type["entitlement_reassigned"]["old_value"] == 100
-    assert by_type["entitlement_reassigned"]["new_value"] == 200
+    assert by_type["sandbox_rule_reassigned"]["old_value"] == "profile.A"
+    assert by_type["sandbox_rule_reassigned"]["new_value"] == "profile.B"
+    assert by_type["entitlement_reassigned"]["old_value"] == "appA"
+    assert by_type["entitlement_reassigned"]["new_value"] == "appB"
 
 
 def test_structural_diff_dedupes_no_cartesian(two_dbs):
@@ -1234,13 +1249,19 @@ def test_structural_diff_dedupes_no_cartesian(two_dbs):
     initialize_database(db1)
     initialize_database(db2)
 
-    def seed(db, solo_file_id):
+    def seed(db, solo_path):
         conn = sqlite3.connect(str(db))
+        # Ambiguous rows (duplicate executable_name / operation+action / key+value)
+        # are filtered out by the HAVING COUNT(*) = 1 dedup guard before any join,
+        # so their dangling foreign keys never need to resolve.
         conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (10, 'helper')")
         conn.execute("INSERT INTO binaries (file_id, executable_name) VALUES (20, 'helper')")
+        # The unambiguous 'solo' binary really moved; its file must exist so the
+        # natural-key (path) join resolves.
+        conn.execute("INSERT INTO files (path, filename) VALUES (?, 'solo')", (solo_path,))
+        fid = conn.execute("SELECT id FROM files WHERE path=?", (solo_path,)).fetchone()[0]
         conn.execute(
-            "INSERT INTO binaries (file_id, executable_name) VALUES (?, 'solo')",
-            (solo_file_id,),
+            "INSERT INTO binaries (file_id, executable_name) VALUES (?, 'solo')", (fid,)
         )
         conn.execute(
             "INSERT INTO sandbox_rules (profile_id, operation, action) "
@@ -1255,8 +1276,8 @@ def test_structural_diff_dedupes_no_cartesian(two_dbs):
         conn.commit()
         conn.close()
 
-    seed(db1, 100)  # solo -> file 100 (old)
-    seed(db2, 200)  # solo -> file 200 (new; genuine move)
+    seed(db1, "/bin/solo")   # solo -> /bin/solo (old)
+    seed(db2, "/sbin/solo")  # solo -> /sbin/solo (new; genuine move)
 
     with IcarusDiffer(str(db1), str(db2)) as d:
         result = d.structural_diff()
@@ -1264,8 +1285,8 @@ def test_structural_diff_dedupes_no_cartesian(two_dbs):
     assert [c["type"] for c in result.structural] == ["binary_file_moved"]
     only = result.structural[0]
     assert only["entity"] == "solo"
-    assert only["old_value"] == 100
-    assert only["new_value"] == 200
+    assert only["old_value"] == "/bin/solo"
+    assert only["new_value"] == "/sbin/solo"
 
 
 def test_entitlement_diff_uses_natural_key(two_dbs):

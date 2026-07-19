@@ -218,13 +218,16 @@ class IcarusDiffer:
         """
         structural_changes = []
 
-        # Binaries whose parent file changed.
-        # executable_name is not unique, so restrict to names that identify
-        # exactly one binary on each side; otherwise the join Cartesian-products
-        # duplicates into false "moved" rows. Ambiguous names are skipped.
+        # Binaries whose parent file changed. Compare the file's NATURAL key
+        # (files.path), never file_id: file_id is a local autoincrement id assigned
+        # independently in each database, so comparing it fabricates "moved" rows
+        # from mere insertion-order skew and hides real moves when ids coincide.
+        # executable_name is not unique, so restrict to names that identify exactly
+        # one binary on each side; otherwise the join Cartesian-products duplicates
+        # into false rows. Ambiguous names are skipped.
         rows = self.conn.execute("""
             SELECT n.executable_name,
-                   n.file_id AS new_file_id, o.file_id AS old_file_id
+                   nf.path AS new_path, of.path AS old_path
             FROM (
                 SELECT executable_name, file_id FROM main.binaries
                 WHERE executable_name IS NOT NULL
@@ -235,25 +238,29 @@ class IcarusDiffer:
                 WHERE executable_name IS NOT NULL
                 GROUP BY executable_name HAVING COUNT(*) = 1
             ) o ON n.executable_name = o.executable_name
-            WHERE n.file_id IS NOT o.file_id
+            JOIN main.files nf ON nf.id = n.file_id
+            JOIN old_db.files of ON of.id = o.file_id
+            WHERE nf.path IS NOT of.path
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "binary_file_moved",
                 "entity": r.get("executable_name"),
-                "old_value": r.get("old_file_id"),
-                "new_value": r.get("new_file_id"),
-                "description": f"binary '{r.get('executable_name')}' file_id: "
-                               f"{r.get('old_file_id')} -> {r.get('new_file_id')}",
+                "old_value": r.get("old_path"),
+                "new_value": r.get("new_path"),
+                "description": f"binary '{r.get('executable_name')}' file: "
+                               f"{r.get('old_path')} -> {r.get('new_path')}",
             })
 
-        # Sandbox rules whose profile assignment changed.
-        # (operation, action) is not unique; restrict to pairs identifying
-        # exactly one rule on each side so duplicates cannot cross-product.
+        # Sandbox rules whose profile assignment changed. Compare the profile's
+        # NATURAL key (sandbox_profiles.name), not profile_id (a local autoincrement
+        # id with no cross-database meaning). (operation, action) is not unique;
+        # restrict to pairs identifying exactly one rule on each side so duplicates
+        # cannot cross-product.
         rows = self.conn.execute("""
             SELECT n.operation, n.action,
-                   n.profile_id AS new_pid, o.profile_id AS old_pid
+                   np.name AS new_profile, op.name AS old_profile
             FROM (
                 SELECT operation, action, profile_id FROM main.sandbox_rules
                 GROUP BY operation, action HAVING COUNT(*) = 1
@@ -262,26 +269,38 @@ class IcarusDiffer:
                 SELECT operation, action, profile_id FROM old_db.sandbox_rules
                 GROUP BY operation, action HAVING COUNT(*) = 1
             ) o ON n.operation = o.operation AND n.action = o.action
-            WHERE n.profile_id IS NOT o.profile_id
+            JOIN main.sandbox_profiles np ON np.id = n.profile_id
+            JOIN old_db.sandbox_profiles op ON op.id = o.profile_id
+            WHERE np.name IS NOT op.name
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "sandbox_rule_reassigned",
                 "entity": f"{r.get('operation')}:{r.get('action')}",
-                "old_value": r.get("old_pid"),
-                "new_value": r.get("new_pid"),
+                "old_value": r.get("old_profile"),
+                "new_value": r.get("new_profile"),
                 "description": f"sandbox rule '{r.get('operation')}:{r.get('action')}' "
-                               f"profile: {r.get('old_pid')} -> {r.get('new_pid')}",
+                               f"profile: {r.get('old_profile')} -> {r.get('new_profile')}",
             })
 
-        # Entitlements whose binary assignment changed (same key+value,
-        # different binary). (key, value) is not unique; restrict to pairs
-        # identifying exactly one entitlement on each side so duplicates
-        # cannot cross-product into false "reassigned" rows.
+        # Entitlements whose owning binary changed (same key+value, different
+        # binary). The owner is identified by the binary's most stable available
+        # identity -- bundle_id, else executable_name, else the file path -- NOT the
+        # file path alone. executable_name is exactly the identity binary_file_moved
+        # (above) uses to track a binary across a move, so a binary that merely moves
+        # paths keeps the same owner identity here and its entitlements are correctly
+        # seen as unchanged; only a move onto a genuinely different binary is reported.
+        # Keying on path alone reported every path move as a spurious reassignment (on
+        # top of the binary_file_moved row for the same event). Residual limitation: a
+        # binary with neither bundle_id nor executable_name falls back to path, so its
+        # moves remain ambiguous. (key, value) is not unique; restrict to pairs
+        # identifying exactly one entitlement on each side so duplicates cannot
+        # cross-product into false rows.
         rows = self.conn.execute("""
             SELECT n.key, n.value,
-                   n.binary_id AS new_bid, o.binary_id AS old_bid
+                   COALESCE(nb.bundle_id, nb.executable_name, 'path:' || nf.path) AS new_owner,
+                   COALESCE(ob.bundle_id, ob.executable_name, 'path:' || of.path) AS old_owner
             FROM (
                 SELECT key, value, binary_id FROM main.entitlements
                 GROUP BY key, value HAVING COUNT(*) = 1
@@ -290,17 +309,22 @@ class IcarusDiffer:
                 SELECT key, value, binary_id FROM old_db.entitlements
                 GROUP BY key, value HAVING COUNT(*) = 1
             ) o ON n.key = o.key AND n.value = o.value
-            WHERE n.binary_id IS NOT o.binary_id
+            JOIN main.binaries nb ON nb.id = n.binary_id
+            JOIN old_db.binaries ob ON ob.id = o.binary_id
+            JOIN main.files nf ON nf.id = nb.file_id
+            JOIN old_db.files of ON of.id = ob.file_id
+            WHERE COALESCE(nb.bundle_id, nb.executable_name, 'path:' || nf.path)
+               IS NOT COALESCE(ob.bundle_id, ob.executable_name, 'path:' || of.path)
         """).fetchall()
         for r in rows:
             r = dict(r)
             structural_changes.append({
                 "type": "entitlement_reassigned",
                 "entity": r.get("key"),
-                "old_value": r.get("old_bid"),
-                "new_value": r.get("new_bid"),
+                "old_value": r.get("old_owner"),
+                "new_value": r.get("new_owner"),
                 "description": f"entitlement '{r.get('key')}' "
-                               f"binary: {r.get('old_bid')} -> {r.get('new_bid')}",
+                               f"binary: {r.get('old_owner')} -> {r.get('new_owner')}",
             })
 
         return DiffResult(
@@ -312,36 +336,128 @@ class IcarusDiffer:
         )
 
     def observation_diff(self) -> DiffResult:
-        """Diff observation records between old and new databases."""
-        added_rows = self.conn.execute("""
-            SELECT n.entity_table, n.entity_id, n.event_type, n.observed_at
-            FROM main.observations n
-            LEFT JOIN old_db.observations o
-                ON n.entity_table = o.entity_table
-                AND n.entity_id = o.entity_id
-                AND n.event_type = o.event_type
-                AND n.observed_at = o.observed_at
-            WHERE o.id IS NULL
-        """).fetchall()
+        """Diff observation records between old and new databases.
 
-        removed_rows = self.conn.execute("""
-            SELECT o.entity_table, o.entity_id, o.event_type, o.observed_at
-            FROM old_db.observations o
-            LEFT JOIN main.observations n
-                ON o.entity_table = n.entity_table
-                AND o.entity_id = n.entity_id
-                AND o.event_type = n.event_type
-                AND o.observed_at = n.observed_at
-            WHERE n.id IS NULL
-        """).fetchall()
+        Observations reference their subject polymorphically as
+        ``(entity_table, entity_id)`` where ``entity_id`` is a local
+        AUTOINCREMENT row id. That id has no meaning across two independently
+        built databases: the same logical file gets different ids depending on
+        insertion order, so matching observations on the raw id fabricated
+        "added"/"removed" rows from mere insertion-order skew (and hid real
+        changes when ids happened to coincide). Each observation is therefore
+        resolved to its subject's NATURAL key before comparison. Observations
+        whose subject row is absent, or whose entity_table has no known natural
+        key, are excluded from the natural-key comparison and surfaced
+        separately so they are neither silently dropped nor compared on a
+        meaningless id.
+        """
+        new_keyed, new_unresolved = self._resolve_observations("main")
+        old_keyed, old_unresolved = self._resolve_observations("old_db")
+
+        added = [self._observation_dict(t) for t in sorted(new_keyed - old_keyed)]
+        removed = [self._observation_dict(t) for t in sorted(old_keyed - new_keyed)]
+
+        # Unresolved observations (missing subject row or unmapped table) cannot
+        # be compared by natural key; report them on both sides for visibility.
+        for side, unresolved in (("new", new_unresolved), ("old", old_unresolved)):
+            for t in sorted(unresolved):
+                row = self._observation_dict(t)
+                row["unresolved"] = side
+                (added if side == "new" else removed).append(row)
 
         return DiffResult(
-            added=[dict(r) for r in added_rows],
-            removed=[dict(r) for r in removed_rows],
+            added=added,
+            removed=removed,
             changed=[],
             table="observations",
             key_column="entity_table",
         )
+
+    # entity_table -> the column on that table that is its stable natural key.
+    # "binaries" is resolved to its file's path via file_id (see _resolve_observations).
+    _OBSERVATION_ENTITY_KEY = {
+        "files": "path",
+        "daemons": "label",
+        "kexts": "bundle_id",
+        "frameworks": "path",
+        "sandbox_profiles": "name",
+    }
+
+    def _resolve_observations(self, schema: str):
+        """Resolve one database's observations to natural-key tuples.
+
+        Returns (keyed, unresolved): ``keyed`` is a set of
+        ``(entity_table, natural_key, event_type, observed_at)`` tuples;
+        ``unresolved`` is a set of ``(entity_table, "id:<n>", event_type,
+        observed_at)`` tuples for observations that could not be resolved.
+        """
+        entity_tables = {
+            row[0]
+            for row in self.conn.execute(
+                f"SELECT DISTINCT entity_table FROM {schema}.observations"  # nosec B608 - schema is a fixed literal
+            )
+        }
+
+        keyed = set()
+        unresolved = set()
+        for table in entity_tables:
+            if table == "binaries":
+                # A binary has no unique column of its own; use its file path,
+                # which is UNIQUE, via the mandatory file_id foreign key.
+                query = (
+                    f"SELECT ob.entity_table, f.path, ob.event_type, ob.observed_at "  # nosec B608 - identifiers are fixed literals; entity_table bound as a parameter
+                    f"FROM {schema}.observations ob "
+                    f"JOIN {schema}.binaries b ON b.id = ob.entity_id "
+                    f"JOIN {schema}.files f ON f.id = b.file_id "
+                    f"WHERE ob.entity_table = ?"
+                )
+            elif table in self._OBSERVATION_ENTITY_KEY:
+                key_col = self._OBSERVATION_ENTITY_KEY[table]
+                query = (
+                    f"SELECT ob.entity_table, e.{key_col}, ob.event_type, ob.observed_at "  # nosec B608 - table/key_col come from a fixed whitelist; entity_table bound as a parameter
+                    f"FROM {schema}.observations ob "
+                    f"JOIN {schema}.{table} e ON e.id = ob.entity_id "
+                    f"WHERE ob.entity_table = ?"
+                )
+            else:
+                # No known natural key: keep the raw id, marked unresolved.
+                for row in self.conn.execute(
+                    f"SELECT entity_table, entity_id, event_type, observed_at "  # nosec B608 - schema is a fixed literal
+                    f"FROM {schema}.observations WHERE entity_table = ?",
+                    (table,),
+                ):
+                    unresolved.add((row[0], f"id:{row[1]}", row[2], row[3]))
+                continue
+
+            resolved_ids = set()
+            for row in self.conn.execute(query, (table,)):
+                natural = row[1]
+                if natural is None:
+                    continue
+                keyed.add((row[0], str(natural), row[2], row[3]))
+                resolved_ids.add((row[2], row[3]))
+
+            # Observations whose subject row is missing (orphaned) or whose key
+            # column is NULL are surfaced as unresolved rather than dropped.
+            for row in self.conn.execute(
+                f"SELECT entity_table, entity_id, event_type, observed_at "  # nosec B608 - schema is a fixed literal
+                f"FROM {schema}.observations ob WHERE entity_table = ? "
+                f"AND NOT EXISTS (SELECT 1 FROM {schema}.{table} e WHERE e.id = ob.entity_id)",
+                (table,),
+            ):
+                unresolved.add((row[0], f"id:{row[1]}", row[2], row[3]))
+
+        return keyed, unresolved
+
+    @staticmethod
+    def _observation_dict(tup) -> dict:
+        entity_table, entity_key, event_type, observed_at = tup
+        return {
+            "entity_table": entity_table,
+            "entity_key": entity_key,
+            "event_type": event_type,
+            "observed_at": observed_at,
+        }
 
     def full_diff(self) -> Dict[str, DiffResult]:
         """Run diff across all major tables, including structural analysis."""
