@@ -70,6 +70,111 @@ def test_schema_init_and_fts(tmp_db):
     conn.close()
 
 
+def test_initialize_database_refuses_future_schema_without_relabeling(tmp_db):
+    from icarus.core.schema import SchemaVersionError, initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "UPDATE metadata SET value = '99' WHERE key = 'schema_version'"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionError, match=r"Unsupported.*99.*refusing"):
+        initialize_database(tmp_db)
+
+    conn = sqlite3.connect(str(tmp_db))
+    try:
+        stored = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == "99"
+
+
+def test_initialize_database_rejects_malformed_schema_version(tmp_db):
+    from icarus.core.schema import SchemaVersionError, initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute(
+        "UPDATE metadata SET value = 'not-an-integer' WHERE key = 'schema_version'"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionError, match=r"Invalid.*not-an-integer.*integer"):
+        initialize_database(tmp_db)
+
+    conn = sqlite3.connect(str(tmp_db))
+    try:
+        stored = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == "not-an-integer"
+
+
+def test_initialize_database_does_not_restamp_current_schema(tmp_db):
+    from icarus.core.schema import initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        CREATE TRIGGER reject_schema_version_restamp
+        BEFORE INSERT ON metadata
+        WHEN NEW.key = 'schema_version'
+        BEGIN
+            SELECT RAISE(ABORT, 'schema version was re-stamped');
+        END;
+    """)
+    conn.commit()
+    conn.close()
+
+    result = initialize_database(tmp_db)
+    assert result["schema_version"] == 6
+
+
+def test_initialize_database_rejects_incomplete_current_schema(tmp_db):
+    from icarus.core.schema import SchemaValidationError, initialize_database
+
+    initialize_database(tmp_db)
+    conn = sqlite3.connect(str(tmp_db))
+    conn.execute("DROP TRIGGER files_ai")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaValidationError, match=r"version 6.*trigger 'files_ai'.*refusing"):
+        initialize_database(tmp_db)
+
+    conn = sqlite3.connect(str(tmp_db))
+    try:
+        stored = conn.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stored == "6"
+
+
+def test_initialize_database_refuses_unsupported_legacy_schema(tmp_db):
+    from icarus.core.schema import SchemaVersionError, initialize_database
+
+    conn = sqlite3.connect(str(tmp_db))
+    conn.executescript("""
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata VALUES ('schema_version', '1');
+    """)
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaVersionError, match=r"supports versions 2 through 6"):
+        initialize_database(tmp_db)
+
+
 def test_query_sql_injection(tmp_db):
     from icarus.core.query import IcarusQuery
     from icarus.core.schema import initialize_database

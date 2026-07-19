@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from icarus.core import validate_table
+from icarus.core.schema import open_db
 
 try:
     from hygeia import sanitize_database, verify_database
@@ -50,7 +51,7 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
         except (sqlite3.IntegrityError, sqlite3.OperationalError):
             pass  # UNIQUE constraint on redacted paths — fall through to built-in
 
-    conn = sqlite3.connect(str(db_path))
+    conn = open_db(db_path)
     stats = {"checked_rows": 0, "redacted": 0, "patterns_found": {}}
     try:
         text_columns = _get_text_columns(conn)
@@ -114,7 +115,7 @@ def verify_clean(db_path: Path) -> Dict[str, Any]:
             "total_findings": result.get("total_findings", len(result.get("findings", []))),
         }
 
-    conn = sqlite3.connect(str(db_path))
+    conn = open_db(db_path)
     findings = []
     try:
         text_columns = _get_text_columns(conn)
