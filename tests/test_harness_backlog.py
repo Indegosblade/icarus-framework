@@ -357,7 +357,9 @@ def test_golden_output_flags_wrong_declared_zero_pii(tmp_path):
     golden_path = tmp_path / "golden.json"
     golden_path.write_text(json.dumps({
         "entity_counts": {"files": 1, "daemons": 1},
-        "zero_pii": False,  # the real cloudtrail output for this fixture IS zero-pii
+        # The synthetic event UUID is intentionally detected. Declaring this
+        # raw parser output clean must fail the golden comparison.
+        "zero_pii": True,
     }))
     manifest = _cloudtrail_manifest_with_golden(golden_path)
     harness = ParserTestHarness(parser, manifest, src)
@@ -402,7 +404,9 @@ def test_golden_output_accepts_correct_declared_fields(tmp_path):
     golden_path.write_text(json.dumps({
         "entity_counts": counts,
         "content_fingerprint": fp,
-        "zero_pii": True,
+        # The raw fixture retains its synthetic event UUID; the full pipeline's
+        # HYGEIA phase removes it before an output is represented as shareable.
+        "zero_pii": False,
         "has_relationships": False,
         "observation_count": 1,
     }))
