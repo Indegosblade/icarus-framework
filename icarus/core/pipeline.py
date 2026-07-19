@@ -229,6 +229,49 @@ class Pipeline:
                 raise
 
         self._finalize_version_record()
+
+        # Finalization writes completion metadata after the sanitize phase. A
+        # second, read-only gate ensures no post-sanitize write can invalidate
+        # the share-safe claim. If it fails, mark sanitize failed so resume
+        # re-runs sanitization instead of skipping every completed phase.
+        sanitize_indices = [
+            index for index, phase in enumerate(self.phases) if phase.name == "sanitize"
+        ]
+        if sanitize_indices:
+            from icarus.integrations.hygeia import (
+                SanitizationError,
+                mark_sanitization_failed,
+                verify_clean,
+            )
+
+            sanitize_index = sanitize_indices[-1]
+            try:
+                final_gate = verify_clean(self.output)
+            except Exception:
+                error = SanitizationError(
+                    "Final post-write sanitization gate could not complete"
+                )
+                mark_sanitization_failed(self.output)
+                self.save_checkpoint(sanitize_index, "failed", {"error": str(error)})
+                self.context.errors.append(("sanitize_final_gate", str(error)))
+                raise error from None
+
+            if not final_gate["passed"]:
+                residual_types = ", ".join(final_gate["patterns_found"].keys())
+                error = SanitizationError(
+                    "Final post-write sanitization gate found "
+                    f"{final_gate['total_findings']} residual finding(s) of type(s): "
+                    f"{residual_types}"
+                )
+                mark_sanitization_failed(self.output)
+                self.save_checkpoint(sanitize_index, "failed", {"error": str(error)})
+                self.context.errors.append(("sanitize_final_gate", str(error)))
+                raise error
+
+            self.context.stats["sanitize_final_gate"] = {
+                "passed": True,
+                "total_findings": 0,
+            }
         self._clear_checkpoint()
 
         total = time.time() - self.context.start_time
@@ -256,7 +299,7 @@ def create_default_pipeline(
             ``icarus resolve`` CLI command instead.
     """
     from icarus.core.schema import initialize_database
-    from icarus.integrations.hygeia import sanitize_output
+    from icarus.integrations.hygeia import require_hygeia, sanitize_output
     from icarus.parsers import get_parser
 
     pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
@@ -287,8 +330,14 @@ def create_default_pipeline(
         pipeline.add_phase("skip_hygeia_marker", _mark_hygeia_skipped,
                            "Record HYGEIA skip in metadata")
     else:
+        engine = require_hygeia()
+        pipeline.context.stats["sanitizer"] = engine
+        print(
+            f"[ICARUS] Sanitizer: {engine['engine']} "
+            f"v{engine['version']} ({engine['mode']})"
+        )
         pipeline.add_phase("sanitize", lambda ctx: sanitize_output(ctx.output_db),
-                           "HYGEIA sanitization pass")
+                           "HYGEIA canonical sanitizer + mandatory post-gate")
 
     return pipeline
 
