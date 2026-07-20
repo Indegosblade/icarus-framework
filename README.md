@@ -4,8 +4,15 @@
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat&logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat)
 ![License: PolyForm NC](https://img.shields.io/badge/license-PolyForm%20NC-orange?style=flat)
+![Status: Beta](https://img.shields.io/badge/status-beta-yellow?style=flat)
 
 A modular framework for extracting entities from structured data sources, resolving them across versions, and producing queryable intelligence databases. One command in, one SQLite database out.
+
+> **Status: Beta, source-available.** ICARUS is under active development and its
+> interfaces may change. It is licensed under PolyForm Noncommercial 1.0.0 — this is a
+> **source-available** license, **not** an OSI-approved open-source license. See
+> [License](#license). The experimental entity resolver is excluded from the beta
+> stability promise.
 
 Parsers cover Windows, Linux, cloud audit logs, and **iOS/macOS root filesystems** — the last maps the launchd daemon, Mach-service, and entitlement attack surface for Apple-platform security research (validated on a live iOS 27.0 IPSW).
 
@@ -437,6 +444,8 @@ Everything shipped in one sprint.
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — free for research, education, and personal use.
+This is a **source-available** license, **not** an OSI-approved open-source license:
+noncommercial use only, no warranty. Review the [LICENSE](LICENSE) before use.
 
 ## Author
 
