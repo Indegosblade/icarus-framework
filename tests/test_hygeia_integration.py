@@ -1,26 +1,7 @@
-"""Behavioral tests for icarus.integrations.hygeia.
+"""Security regressions for the fail-closed HYGEIA integration (#41/#42)."""
 
-Covers PRODUCTION_AUDIT.md findings:
-
-- #133: the built-in regex PII fallback in sanitize_output()/verify_clean()
-  only runs when the `hygeia` package fails to import with the expected
-  symbols. Whether these tests actually exercise that fallback body silently
-  depends on whatever happens to be installed in the environment running
-  them. Both branches (`_HAS_HYGEIA_PACKAGE` True and False) are forced here
-  via monkeypatch so the fallback is deterministically covered regardless of
-  environment, and the delegation branch is verified independently.
-- #205: sanitize_output/verify_clean must not fetchall() whole tables into
-  memory — exercised implicitly by every test below (would still pass with
-  fetchall(), but confirms no behavioral regression from the cursor-based
-  rewrite on realistic multi-row data).
-- #220: table/column identifiers pulled from sqlite_master must be validated
-  (via validate_table) and safely quoted before interpolation into SQL —
-  exercised by a database containing a non-ICARUS ("rogue") table name that
-  must be skipped rather than blindly interpolated.
-"""
-
+import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -28,287 +9,300 @@ import pytest
 from icarus.core.schema import initialize_database
 from icarus.integrations import hygeia as hygeia_mod
 
-# (stored value, expected PII_PATTERNS name, substring that must disappear on redaction)
-KNOWN_PII_ROWS = [
-    ("contact: alice@example.com", "email", "alice@example.com"),
-    ("seen at /Users/alice/Documents/secret.txt", "username_path", "/Users/alice"),
-    (r"seen at C:\Users\bob\Desktop\notes.txt", "username_path_win", r"C:\Users\bob"),
-    ("ssn on file: 123-45-6789", "ssn", "123-45-6789"),
-]
+SYNTHETIC_SECRETS = {
+    "password": "SyntheticSecretValue-Only-For-Test",
+    "aws_access_key": "AKIAABCDEFGHIJKLMNOP",
+    "jwt": "eyJabcdefghijk.eyJabcdefghijk.abcdefghijklm",
+    "wireguard_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "bearer": "synthetic-bearer-token-value-1234567890",
+}
 
 
 @pytest.fixture
-def pii_db():
-    """A real ICARUS-schema database with known-PII rows in a valid TEXT column."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    initialize_database(db_path, {"source": "test"})
-
+def secret_db(tmp_path):
+    """Create an ICARUS DB with synthetic credentials across text surfaces."""
+    db_path = tmp_path / "secrets.db"
+    initialize_database(db_path, {"source": "synthetic-test"})
     conn = sqlite3.connect(str(db_path))
-    for i, (observer, _pattern, _needle) in enumerate(KNOWN_PII_ROWS):
+    rows = [
+        f"password = {SYNTHETIC_SECRETS['password']}",
+        f"aws_access_key = {SYNTHETIC_SECRETS['aws_access_key']}",
+        f"Authorization: Bearer {SYNTHETIC_SECRETS['jwt']}",
+        f"PrivateKey = {SYNTHETIC_SECRETS['wireguard_key']}",
+        f"bearer_token = {SYNTHETIC_SECRETS['bearer']}",
+        "-----BEGIN PRIVATE KEY-----",
+    ]
+    for index, value in enumerate(rows, start=1):
         conn.execute(
             """
             INSERT INTO observations
                 (entity_table, entity_id, observed_at, observer, event_type, properties)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("files", i + 1, "2026-01-01T00:00:00Z", observer, "note", "synthetic test row"),
+            ("files", index, "2026-01-01T00:00:00Z", "synthetic", "note", value),
         )
+
+    # Metadata was skipped by the old verifier. It must now be sanitized too.
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+        ("synthetic_credential", f"password={SYNTHETIC_SECRETS['password']}"),
+    )
+    # files_fts mirrors these fields through triggers. Both the source table
+    # and the searchable virtual table must be clean after sanitization.
+    conn.execute(
+        "INSERT INTO files (path, filename, file_type) VALUES (?, ?, ?)",
+        (
+            f"/tmp/password={SYNTHETIC_SECRETS['password']}",
+            f"Bearer {SYNTHETIC_SECRETS['bearer']}",
+            "synthetic",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _all_public_text(db_path: Path) -> str:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        values = []
+        for table, columns in hygeia_mod._get_text_columns(conn).items():
+            quoted_table = hygeia_mod._quote_ident(table)
+            select_list = ", ".join(hygeia_mod._quote_ident(column) for column in columns)
+            for row in conn.execute(f"SELECT {select_list} FROM {quoted_table}"):
+                values.extend(value for value in row if isinstance(value, str))
+        return "\n".join(values)
+    finally:
+        conn.close()
+
+
+def test_real_hygeia_api_is_active():
+    engine = hygeia_mod.require_hygeia()
+
+    assert hygeia_mod.using_standalone_hygeia() is True
+    assert engine["engine"] == "hygeia.sqlite_sanitizer.sanitize_database_generic"
+    assert engine["mode"] == "fail-closed"
+
+
+def test_sanitize_removes_credentials_and_enforces_post_gate(secret_db):
+    stats = hygeia_mod.sanitize_output(secret_db)
+    output = _all_public_text(secret_db)
+
+    assert stats["verified"] is True
+    assert stats["post_sanitize_findings"] == 0
+    assert stats["redacted"] >= len(SYNTHETIC_SECRETS)
+    assert "password_kv" in stats["patterns_found"]
+    assert "private_key_kv" in stats["patterns_found"]
+    for secret in SYNTHETIC_SECRETS.values():
+        assert secret not in output
+
+    verified = hygeia_mod.verify_clean(secret_db)
+    assert verified["passed"] is True
+    assert verified["total_findings"] == 0
+
+
+def test_findings_and_metadata_never_retain_raw_secret(secret_db):
+    before = hygeia_mod.verify_clean(secret_db)
+    stats = hygeia_mod.sanitize_output(secret_db)
+
+    conn = sqlite3.connect(str(secret_db))
+    audit_json = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_audit'"
+    ).fetchone()[0]
+    engine_json = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_engine'"
+    ).fetchone()[0]
+    conn.close()
+
+    serialized = json.dumps({"before": before, "stats": stats, "audit": audit_json})
+    for secret in SYNTHETIC_SECRETS.values():
+        assert secret not in serialized
+
+    assert before["findings"]
+    assert all("sample" not in finding for finding in before["findings"])
+    assert all(
+        finding["fingerprint"].startswith("hmac-sha256:")
+        for finding in before["findings"]
+    )
+    assert json.loads(audit_json)["verified"] is True
+    assert json.loads(engine_json)["mode"] == "fail-closed"
+
+
+def test_full_pipeline_sanitizes_seeded_cloudtrail_secret(tmp_path):
+    from icarus.core.pipeline import create_default_pipeline
+
+    source = tmp_path / "cloudtrail"
+    source.mkdir()
+    secret = SYNTHETIC_SECRETS["password"]
+    payload = {
+        "Records": [
+            {
+                "eventVersion": "1.08",
+                "userIdentity": {
+                    "type": "IAMUser",
+                    "arn": "arn:aws:iam::123456789012:user/synthetic",
+                    "accountId": "123456789012",
+                },
+                "eventTime": "2026-01-01T00:00:00Z",
+                "eventSource": "iam.amazonaws.com",
+                "eventName": "DescribeInstances",
+                "awsRegion": "us-east-1",
+                "errorMessage": f"password={secret}",
+            }
+        ]
+    }
+    (source / "events.json").write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "output.db"
+
+    pipeline = create_default_pipeline(source, output, "cloud/aws/cloudtrail")
+    context = pipeline.run(resume=False)
+
+    assert context.stats["sanitizer"]["mode"] == "fail-closed"
+    assert context.stats["sanitize"]["verified"] is True
+    assert context.stats["sanitize_final_gate"]["passed"] is True
+    assert secret not in _all_public_text(output)
+    verification = hygeia_mod.verify_clean(output)
+    assert verification["passed"] is True, verification
+
+    conn = sqlite3.connect(str(output))
+    started_at, completed_at = conn.execute(
+        "SELECT started_at, completed_at FROM versions"
+    ).fetchone()
+    conn.close()
+    assert "REDACTED" not in started_at
+    assert "REDACTED" not in completed_at
+
+
+def test_missing_hygeia_fails_closed_before_output_is_created(tmp_path, monkeypatch):
+    from icarus.core.pipeline import create_default_pipeline
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "input.json").write_text('{"safe": true}', encoding="utf-8")
+    output = tmp_path / "output.db"
+    monkeypatch.setattr(hygeia_mod, "_HAS_HYGEIA_PACKAGE", False)
+
+    with pytest.raises(hygeia_mod.HygeiaUnavailableError, match="HYGEIA is required"):
+        create_default_pipeline(source, output, "generic/json")
+
+    assert not output.exists()
+
+
+def test_final_pipeline_gate_invalidates_clean_marker_on_late_secret(tmp_path):
+    from icarus.core.pipeline import create_default_pipeline
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "input.json").write_text('{"safe": true}', encoding="utf-8")
+    output = tmp_path / "output.db"
+    secret = SYNTHETIC_SECRETS["password"]
+    pipeline = create_default_pipeline(source, output, "generic/json")
+    original_finalize = pipeline._finalize_version_record
+
+    def inject_after_sanitize():
+        original_finalize()
+        conn = sqlite3.connect(str(output))
+        conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+            ("late_write", f"password={secret}"),
+        )
+        conn.commit()
+        conn.close()
+
+    pipeline._finalize_version_record = inject_after_sanitize
+
+    with pytest.raises(hygeia_mod.SanitizationError) as caught:
+        pipeline.run(resume=False)
+
+    assert secret not in str(caught.value)
+    assert pipeline.checkpoint_db.exists()
+    conn = sqlite3.connect(str(output))
+    status = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_status'"
+    ).fetchone()[0]
+    audit = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_audit'"
+    ).fetchone()
+    conn.close()
+    assert status == "FAILED: output is not safe to share"
+    assert audit is None
+
+
+def test_noop_sanitizer_is_caught_by_mandatory_post_gate(secret_db, monkeypatch):
+    def noop(_path, registry):
+        return {"rows_redacted": 0, "integrity_post": True}
+
+    monkeypatch.setattr(hygeia_mod, "sanitize_database_generic", noop)
+
+    with pytest.raises(hygeia_mod.SanitizationError) as caught:
+        hygeia_mod.sanitize_output(secret_db)
+
+    message = str(caught.value)
+    assert "Post-sanitize verification found" in message
+    for secret in SYNTHETIC_SECRETS.values():
+        assert secret not in message
+
+    conn = sqlite3.connect(str(secret_db))
+    marker = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_engine'"
+    ).fetchone()
+    conn.close()
+    assert marker is None
+
+
+def test_dependency_exception_is_redacted_from_pipeline_error(secret_db, monkeypatch):
+    raw_secret = SYNTHETIC_SECRETS["password"]
+
+    def broken(_path, registry):
+        raise ValueError(f"dependency leaked {raw_secret}")
+
+    monkeypatch.setattr(hygeia_mod, "sanitize_database_generic", broken)
+
+    with pytest.raises(hygeia_mod.SanitizationError) as caught:
+        hygeia_mod.sanitize_output(secret_db)
+
+    assert raw_secret not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_ontology_name_columns_are_not_blanket_redacted(tmp_path):
+    db_path = tmp_path / "ontology.db"
+    initialize_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO frameworks (name, path, version) VALUES (?, ?, ?)",
+        ("SecurityFramework", "/System/Library/Frameworks/Security.framework", "1.0"),
+    )
     conn.commit()
     conn.close()
 
-    yield db_path
-    db_path.unlink(missing_ok=True)
+    hygeia_mod.sanitize_output(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    name = conn.execute("SELECT name FROM frameworks").fetchone()[0]
+    conn.close()
+    assert name == "SecurityFramework"
 
 
-def _force_fallback(monkeypatch):
-    """Force the built-in regex fallback branch regardless of environment."""
-    monkeypatch.setattr(hygeia_mod, "_HAS_HYGEIA_PACKAGE", False)
-
-
-def _force_delegate(monkeypatch):
-    """Force the 'standalone package present' branch with controlled stand-ins.
-
-    We monkeypatch the imported symbols themselves (not just the flag) because
-    they only exist in hygeia.py's namespace when the real import succeeded —
-    in an environment where it didn't, `sanitize_database`/`verify_database`
-    were never bound at all, so the True branch can't be exercised without
-    also supplying them.
-    """
-    sentinel_sanitize = {"checked_rows": -1, "redacted": -1, "patterns_found": {}}
-    sentinel_verify = {"passed": True, "findings": [], "total_findings": 0}
-
-    monkeypatch.setattr(hygeia_mod, "_HAS_HYGEIA_PACKAGE", True)
-    monkeypatch.setattr(
-        hygeia_mod, "sanitize_database", lambda path: dict(sentinel_sanitize), raising=False
+def test_unknown_table_is_scanned_instead_of_silently_ignored(tmp_path):
+    db_path = tmp_path / "unknown-table.db"
+    initialize_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE extension_data (id INTEGER PRIMARY KEY, notes TEXT)")
+    conn.execute(
+        "INSERT INTO extension_data (notes) VALUES (?)",
+        (f"password={SYNTHETIC_SECRETS['password']}",),
     )
-    monkeypatch.setattr(
-        hygeia_mod, "verify_database", lambda path: dict(sentinel_verify), raising=False
-    )
-    return sentinel_sanitize, sentinel_verify
-
-
-# ---------------------------------------------------------------------------
-# Mode: built-in fallback forced (finding #133) — also exercises #205/#220.
-# ---------------------------------------------------------------------------
-
-
-def test_sanitize_output_fallback_redacts_known_pii(pii_db, monkeypatch):
-    _force_fallback(monkeypatch)
-
-    stats = hygeia_mod.sanitize_output(pii_db)
-
-    assert stats["checked_rows"] == len(KNOWN_PII_ROWS)
-    assert stats["redacted"] == len(KNOWN_PII_ROWS)
-    assert stats["patterns_found"] == {
-        "email": 1,
-        "username_path": 1,
-        "username_path_win": 1,
-        "ssn": 1,
-    }
-
-    conn = sqlite3.connect(str(pii_db))
-    remaining = [r[0] for r in conn.execute("SELECT observer FROM observations ORDER BY rowid")]
+    conn.commit()
     conn.close()
 
-    blob = "\n".join(remaining)
-    for _observer, _pattern_name, needle in KNOWN_PII_ROWS:
-        assert needle not in blob
-    assert "[REDACTED_EMAIL]" in blob
-    assert "[REDACTED_USERNAME_PATH]" in blob
-    assert "[REDACTED_USERNAME_PATH_WIN]" in blob
-    assert "[REDACTED_SSN]" in blob
+    stats = hygeia_mod.sanitize_output(db_path)
 
-
-def test_verify_clean_fallback_detects_pii_before_sanitize(pii_db, monkeypatch):
-    _force_fallback(monkeypatch)
-
-    result = hygeia_mod.verify_clean(pii_db)
-
-    assert result["passed"] is False
-    assert result["total_findings"] == len(KNOWN_PII_ROWS)
-    found_patterns = {f["pattern"] for f in result["findings"]}
-    assert found_patterns == {"email", "username_path", "username_path_win", "ssn"}
-    assert all(f["table"] == "observations" for f in result["findings"])
-    assert all(f["column"] == "observer" for f in result["findings"])
-
-
-def test_verify_clean_fallback_passes_after_sanitize(pii_db, monkeypatch):
-    _force_fallback(monkeypatch)
-
-    hygeia_mod.sanitize_output(pii_db)
-    result = hygeia_mod.verify_clean(pii_db)
-
-    assert result["passed"] is True
-    assert result["total_findings"] == 0
-    assert result["findings"] == []
-
-
-def test_fallback_handles_large_table_without_fetchall(monkeypatch):
-    """#205: sanitize_output/verify_clean must not materialize whole tables.
-
-    Not a memory-ceiling test (unreliable/slow in CI), but a correctness
-    regression test for the cursor-based rewrite: several thousand rows,
-    mixed clean/dirty, must all be visited and only the dirty ones redacted.
-    """
-    _force_fallback(monkeypatch)
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    try:
-        initialize_database(db_path)
-        conn = sqlite3.connect(str(db_path))
-        n = 5000
-        rows = [
-            (
-                "files",
-                i,
-                "2026-01-01T00:00:00Z",
-                f"user{i}@example.com" if i % 500 == 0 else f"clean observer {i}",
-                "note",
-                "bulk synthetic row",
-            )
-            for i in range(1, n + 1)
-        ]
-        conn.executemany(
-            """
-            INSERT INTO observations
-                (entity_table, entity_id, observed_at, observer, event_type, properties)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
-        conn.close()
-
-        expected_dirty = len([1 for i in range(1, n + 1) if i % 500 == 0])
-
-        stats = hygeia_mod.sanitize_output(db_path)
-        assert stats["checked_rows"] == n
-        assert stats["redacted"] == expected_dirty
-        assert stats["patterns_found"] == {"email": expected_dirty}
-
-        result = hygeia_mod.verify_clean(db_path)
-        assert result["passed"] is True
-        assert result["total_findings"] == 0
-    finally:
-        db_path.unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# Mode: standalone package present -> must delegate, not run the fallback body.
-# ---------------------------------------------------------------------------
-
-
-def test_sanitize_output_delegates_when_package_present(pii_db, monkeypatch):
-    sentinel_sanitize, _ = _force_delegate(monkeypatch)
-
-    stats = hygeia_mod.sanitize_output(pii_db)
-
-    # Matches our fake exactly (checked_rows=-1 is impossible from a real scan),
-    # proving delegation rather than a coincidental fallback result.
-    assert stats == sentinel_sanitize
-
-    # The fallback never ran, so the raw PII must still be sitting untouched.
-    conn = sqlite3.connect(str(pii_db))
-    remaining = [r[0] for r in conn.execute("SELECT observer FROM observations ORDER BY rowid")]
+    conn = sqlite3.connect(str(db_path))
+    value = conn.execute("SELECT notes FROM extension_data").fetchone()[0]
     conn.close()
-    assert remaining == [observer for observer, _p, _n in KNOWN_PII_ROWS]
-
-
-def test_verify_clean_delegates_when_package_present(pii_db, monkeypatch):
-    _force_delegate(monkeypatch)
-
-    # The DB still has raw, unredacted PII. The real fallback would find it
-    # (passed=False, total_findings>=4). Getting a clean result instead proves
-    # the call was delegated to our fake verify_database.
-    result = hygeia_mod.verify_clean(pii_db)
-
-    assert result["passed"] is True
-    assert result["total_findings"] == 0
-    assert result["findings"] == []
-
-
-# ---------------------------------------------------------------------------
-# #220: identifiers pulled from sqlite_master must be validated/quoted.
-# ---------------------------------------------------------------------------
-
-
-def test_rogue_table_name_is_skipped_not_interpolated(monkeypatch):
-    """A table name outside icarus.core.VALID_TABLES must be skipped, not
-    blindly f-string-interpolated into the sanitizer's SQL."""
-    _force_fallback(monkeypatch)
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    try:
-        initialize_database(db_path)
-        conn = sqlite3.connect(str(db_path))
-        # Not in icarus.core.VALID_TABLES — must not be scanned/interpolated.
-        conn.execute("CREATE TABLE rogue_table (id INTEGER PRIMARY KEY, notes TEXT)")
-        conn.execute(
-            "INSERT INTO rogue_table (notes) VALUES (?)", ("contact: mallory@example.com",)
-        )
-        conn.execute(
-            """
-            INSERT INTO observations
-                (entity_table, entity_id, observed_at, observer, event_type, properties)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            ("files", 1, "2026-01-01T00:00:00Z", "contact: alice@example.com", "note", "x"),
-        )
-        conn.commit()
-        conn.close()
-
-        stats = hygeia_mod.sanitize_output(db_path)
-        # Only the known "observations" table's row was checked/redacted.
-        assert stats["checked_rows"] == 1
-        assert stats["redacted"] == 1
-
-        conn = sqlite3.connect(str(db_path))
-        rogue_value = conn.execute("SELECT notes FROM rogue_table").fetchone()[0]
-        conn.close()
-        # Untouched: the rogue table was never a validated ICARUS table.
-        assert rogue_value == "contact: mallory@example.com"
-    finally:
-        db_path.unlink(missing_ok=True)
-
-
-def test_column_name_with_embedded_quote_is_safely_escaped(monkeypatch):
-    """A validated ICARUS table can still carry an unusually-named TEXT column
-    (one containing an embedded double-quote — legal in SQLite). #220 requires
-    that identifier be quoted with its embedded quote escaped before
-    interpolation. Unescaped, even a plain SELECT on this column raises
-    sqlite3.OperationalError ("near ... syntax error"), which would crash the
-    whole sanitize/verify pass instead of just skipping one odd column.
-    """
-    _force_fallback(monkeypatch)
-
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    try:
-        initialize_database(db_path)
-        conn = sqlite3.connect(str(db_path))
-        conn.execute('ALTER TABLE files ADD COLUMN "weird ""quoted"" col" TEXT')
-        conn.execute(
-            'INSERT INTO files (path, filename, file_type, "weird ""quoted"" col") '
-            "VALUES (?, ?, ?, ?)",
-            ("/tmp/report.txt", "report.txt", "text", "contact: carol@example.com"),
-        )
-        conn.commit()
-        conn.close()
-
-        # Must not raise — the old unquoted f-string interpolation breaks here.
-        stats = hygeia_mod.sanitize_output(db_path)
-        assert stats["patterns_found"].get("email") == 1
-
-        conn = sqlite3.connect(str(db_path))
-        value = conn.execute('SELECT "weird ""quoted"" col" FROM files').fetchone()[0]
-        conn.close()
-        assert "carol@example.com" not in value
-        assert "[REDACTED_EMAIL]" in value
-    finally:
-        db_path.unlink(missing_ok=True)
+    assert SYNTHETIC_SECRETS["password"] not in value
+    assert any(finding["table"] == "extension_data" for finding in stats["findings"])
 
 
 def test_quote_ident_escapes_embedded_double_quotes():
