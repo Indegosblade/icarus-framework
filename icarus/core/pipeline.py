@@ -18,6 +18,70 @@ from icarus.core.schema import ENTITY_TABLES, open_db
 PROVENANCE_ENTITY_TABLES = (*ENTITY_TABLES, "mach_services")
 
 
+class CheckpointFingerprintMismatch(ValueError):
+    """Raised when a checkpoint belongs to a different source/parser/config.
+
+    The stored fingerprint (resolved source path, parser identity/version, and
+    normalized effective config) does not match the current run. Resuming would
+    silently graft the current run's identity onto a database built from
+    different inputs (issue #45), so the build refuses loudly rather than
+    resuming or discarding-and-rebuilding on its own.
+    """
+
+
+class OutputExistsError(ValueError):
+    """Raised when an output database already exists and cannot be safely reused.
+
+    A pre-existing output with no valid, fingerprint-matching in-progress
+    checkpoint is refused by default (issue #36): reusing it would union new
+    data into a stale database. The user must pass ``--fresh`` for a clean
+    atomic rebuild, or remove/redirect the output.
+    """
+
+
+def compute_fingerprint(
+    source: Path, parser_name: str, parser: object, config: dict
+) -> dict:
+    """Build the resume fingerprint identifying what a checkpoint was built from.
+
+    Captures everything that, if changed, means a stored checkpoint must NOT be
+    resumed into:
+
+    * ``source`` — the resolved absolute source path.
+    * ``parser_name`` — the requested parser name.
+    * ``parser_impl`` — the module-qualified parser class name (implementation
+      identity, so swapping which class serves a name is detected).
+    * ``parser_version`` — the parser's manifest version, or ``"unknown"``.
+    * ``config`` — the normalized effective build config (the flags that change
+      the produced phases/output: ``skip_hygeia`` and ``resolve``). The output
+      path and the resume policy (``--fresh``) are deliberately excluded — they
+      change where/whether we resume, not the identity of what is produced.
+    """
+    cls = type(parser)
+    version = "unknown"
+    try:
+        from icarus.parsers import get_registry
+
+        manifest = get_registry().get_manifest(parser_name)
+        if manifest is not None:
+            version = manifest.version
+    except Exception:
+        version = "unknown"
+
+    return {
+        "source": str(Path(source).resolve()),
+        "parser_name": parser_name,
+        "parser_impl": f"{cls.__module__}.{cls.__qualname__}",
+        "parser_version": version,
+        "config": {key: config[key] for key in sorted(config)},
+    }
+
+
+def _canonical_fingerprint(fingerprint: dict) -> str:
+    """Deterministic serialization for stable equality comparison and storage."""
+    return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+
+
 class PipelinePhase:
     """A single processing phase."""
 
@@ -55,12 +119,17 @@ class Pipeline:
 
     def __init__(
         self, source: Path, output: Path, parser_name: str = "windows",
-        skip_hygeia: bool = False,
+        skip_hygeia: bool = False, fingerprint: Optional[dict] = None,
     ):
         self.source = Path(source)
         self.output = Path(output)
         self.parser_name = parser_name
         self.skip_hygeia = skip_hygeia
+        # Resume fingerprint identifying what this run is built from. When set,
+        # a stored checkpoint is honored ONLY if its fingerprint matches exactly
+        # (see _validate_fingerprint); when None (direct low-level use), resume
+        # falls back to phase-name alignment alone.
+        self.fingerprint = fingerprint
         self.phases: List[PipelinePhase] = []
         self.checkpoint_db = self.output.parent / f".{self.output.stem}_checkpoint.db"
         self.context = PipelineContext(self.source, self.output, parser_name)
@@ -81,6 +150,11 @@ class Pipeline:
         """
         if not self.checkpoint_db.exists():
             return -1
+
+        # Strict fingerprint guard runs first: a checkpoint from a different
+        # source/parser/config must fail loudly, never resume (issue #45).
+        self._validate_fingerprint()
+
         conn = sqlite3.connect(str(self.checkpoint_db))
         try:
             rows = conn.execute(
@@ -99,6 +173,68 @@ class Pipeline:
                 last = phase_index
         return last
 
+    def _load_stored_fingerprint(self) -> Optional[str]:
+        """Return the canonical fingerprint stored in the checkpoint, or None."""
+        if not self.checkpoint_db.exists():
+            return None
+        conn = sqlite3.connect(str(self.checkpoint_db))
+        try:
+            row = conn.execute(
+                "SELECT value FROM checkpoint_meta WHERE key = 'fingerprint'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            conn.close()
+        return row[0] if row else None
+
+    def _validate_fingerprint(self) -> None:
+        """Fail loudly if the stored checkpoint fingerprint differs from this run.
+
+        No-op when this pipeline carries no fingerprint (low-level direct use)
+        or when no checkpoint exists yet. When a fingerprint IS set and a
+        checkpoint is present, the stored fingerprint must match exactly —
+        including the case where the checkpoint predates fingerprinting and has
+        none — otherwise the build refuses rather than silently resuming or
+        discarding-and-rebuilding.
+        """
+        if self.fingerprint is None:
+            return
+        stored = self._load_stored_fingerprint()
+        if stored is None:
+            if not self.checkpoint_db.exists():
+                return
+            raise CheckpointFingerprintMismatch(
+                f"Checkpoint {self.checkpoint_db.name} carries no build fingerprint "
+                "(created by an older ICARUS or by hand) and cannot be safely "
+                "resumed. Pass --fresh for a clean rebuild, or remove the "
+                f"checkpoint file {self.checkpoint_db}."
+            )
+        current = _canonical_fingerprint(self.fingerprint)
+        if stored != current:
+            raise CheckpointFingerprintMismatch(
+                f"Checkpoint {self.checkpoint_db.name} belongs to a different "
+                "source/parser/config than this run — resuming would build a "
+                "database from the OLD inputs while presenting it as the new run.\n"
+                f"  checkpoint fingerprint: {stored}\n"
+                f"  this run's fingerprint: {current}\n"
+                "Pass --fresh for a clean rebuild, or remove the checkpoint file "
+                f"{self.checkpoint_db}."
+            )
+
+    def has_resumable_checkpoint(self) -> bool:
+        """True if a checkpoint exists AND its fingerprint matches this run.
+
+        Used to decide whether a pre-existing output may be resumed into rather
+        than refused. A fingerprint MISMATCH raises (loud failure) rather than
+        returning False, so a wrong-source checkpoint is never quietly treated
+        as "no checkpoint" and rebuilt over the existing output.
+        """
+        if not self.checkpoint_db.exists():
+            return False
+        self._validate_fingerprint()  # raises on mismatch
+        return True
+
     def save_checkpoint(self, phase_index: int, status: str, stats: Optional[dict] = None) -> None:
         """Persist phase completion status for resume-on-crash."""
         conn = sqlite3.connect(str(self.checkpoint_db))
@@ -112,6 +248,20 @@ class Pipeline:
                     stats TEXT
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS checkpoint_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            # Stamp the fingerprint once, on the first checkpoint write, so every
+            # checkpoint this build produces carries the identity of what it was
+            # built from. INSERT OR IGNORE keeps it immutable for the run.
+            if self.fingerprint is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO checkpoint_meta VALUES ('fingerprint', ?)",
+                    (_canonical_fingerprint(self.fingerprint),),
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?)",
                 (phase_index, self.phases[phase_index].name, status,
@@ -304,8 +454,14 @@ def create_default_pipeline(
     from icarus.integrations.hygeia import require_hygeia, sanitize_output
     from icarus.parsers import get_parser
 
-    pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
     parser = get_parser(parser_name)
+    fingerprint = compute_fingerprint(
+        source, parser_name, parser,
+        {"skip_hygeia": skip_hygeia, "resolve": resolve},
+    )
+    pipeline = Pipeline(
+        source, output, parser_name, skip_hygeia=skip_hygeia, fingerprint=fingerprint,
+    )
 
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
                        "Initialize SQLite database and schema")

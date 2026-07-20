@@ -115,4 +115,5 @@ def test_pipeline_raw_connections_are_checkpoint_only():
     assert _sqlite_connect_arguments(pipeline_path) == [
         "str(self.checkpoint_db)",
         "str(self.checkpoint_db)",
+        "str(self.checkpoint_db)",
     ]

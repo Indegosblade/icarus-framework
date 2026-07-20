@@ -5,8 +5,20 @@ import sys
 from pathlib import Path
 
 
+def _cleanup_build_temp(temp: Path, checkpoint: Path) -> None:
+    """Remove a fresh-build temp database plus its side/checkpoint files."""
+    for path in (temp, checkpoint):
+        base = str(path)
+        for suffix in ("", "-wal", "-shm"):
+            Path(base + suffix).unlink(missing_ok=True)
+
+
 def cmd_build(args):
+    import os
+    import uuid
+
     from icarus.core.pipeline import create_default_pipeline
+    from icarus.core.schema import open_db
     from icarus.parsers import detect_parser
 
     source = Path(args.source)
@@ -25,14 +37,63 @@ def cmd_build(args):
             sys.exit(1)
         print(f"[ICARUS] Auto-detected parser: {parser_name}")
 
+    output = Path(args.output)
+
+    if args.fresh:
+        # Atomic clean rebuild: build into a sibling temp DB in the same
+        # directory, run ALL phases + verification gates against it, then
+        # os.replace() onto the destination only on full success. On ANY
+        # failure the destination is left byte-for-byte untouched and the temp
+        # (with its side/checkpoint files) is removed. Never reuses/unions the
+        # existing output.
+        temp = output.parent / f"{output.name}.{uuid.uuid4().hex}.tmp"
+        pipeline = create_default_pipeline(
+            source=source,
+            output=temp,
+            parser_name=parser_name,
+            skip_hygeia=args.skip_hygeia,
+            resolve=args.resolve,
+        )
+        try:
+            pipeline.run(resume=False)
+            # Fold any WAL back into the main file so the single file we move is
+            # self-contained, then drop any residual side files before replace.
+            conn = open_db(temp)
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                conn.close()
+            for suffix in ("-wal", "-shm"):
+                Path(str(temp) + suffix).unlink(missing_ok=True)
+            os.replace(str(temp), str(output))
+        except BaseException:
+            _cleanup_build_temp(temp, pipeline.checkpoint_db)
+            raise
+        else:
+            _cleanup_build_temp(temp, pipeline.checkpoint_db)
+        print(f"[ICARUS] Wrote {output}")
+        return
+
+    # Default (resume) path. Refuse an existing output unless a valid,
+    # fingerprint-matching in-progress checkpoint proves this is the same build
+    # crashing and resuming. A fingerprint MISMATCH raises loudly (issue #45);
+    # a present output with no such checkpoint is refused (issue #36).
     pipeline = create_default_pipeline(
         source=source,
-        output=Path(args.output),
+        output=output,
         parser_name=parser_name,
         skip_hygeia=args.skip_hygeia,
         resolve=args.resolve,
     )
-    pipeline.run(resume=not args.fresh)
+    if output.exists() and not pipeline.has_resumable_checkpoint():
+        from icarus.core.pipeline import OutputExistsError
+
+        raise OutputExistsError(
+            f"Output database already exists: {output}. Refusing to reuse or "
+            "union into it. Pass --fresh for a clean atomic rebuild, or "
+            "remove/redirect the output."
+        )
+    pipeline.run(resume=True)
 
 
 def cmd_query(args):
