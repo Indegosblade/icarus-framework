@@ -761,6 +761,153 @@ def _v5_to_v6(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _extract_create_table(table: str) -> str:
+    """Return the canonical ``CREATE TABLE`` statement for an entity table.
+
+    Sliced verbatim from ``CORE_SCHEMA`` so a table rebuilt during FK-parity
+    repair stores DDL byte-identical to a freshly initialized database's
+    ``sqlite_master`` entry (SQLite strips ``IF NOT EXISTS`` consistently).
+    """
+    match = re.search(
+        rf"CREATE TABLE IF NOT EXISTS {re.escape(table)} \(.*?\n\);",
+        CORE_SCHEMA,
+        re.DOTALL,
+    )
+    if match is None:  # pragma: no cover - guards against future schema drift
+        raise SchemaValidationError(
+            f"CORE_SCHEMA has no CREATE TABLE definition for entity table {table!r}"
+        )
+    return match.group(0)
+
+
+def _entity_table_needs_fk_repair(conn: sqlite3.Connection, table: str) -> bool:
+    """True when ``table`` has a ``source_version_id`` column that lacks the
+    ``REFERENCES versions(id)`` foreign key.
+
+    This is exactly the divergence a v2/v3 → v6 migration produces: the column
+    is added by ``ALTER TABLE ADD COLUMN``, which cannot carry a ``REFERENCES``
+    clause, so the provenance foreign key present on a fresh v6 build is silently
+    absent. A fresh v6 table already has the FK, so this returns ``False`` there
+    and the rebuild is skipped (idempotent no-op).
+    """
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")}
+    if "source_version_id" not in columns:
+        # Table absent, or predates the provenance columns — nothing to repair.
+        return False
+    fk_rows = conn.execute(f"PRAGMA foreign_key_list([{table}])").fetchall()
+    has_version_fk = any(
+        row[3] == "source_version_id" and row[2] == "versions" for row in fk_rows
+    )
+    return not has_version_fk
+
+
+def _rebuild_entity_table_with_fk(conn: sqlite3.Connection, table: str) -> None:
+    """Rebuild one entity table to the canonical v6 definition (with the
+    ``source_version_id -> versions(id)`` foreign key) via SQLite's supported
+    table-redefinition procedure, preserving every row.
+
+    The caller must have disabled ``foreign_keys`` and left no open transaction.
+    Rather than the create-new-then-rename form (whose ``ALTER ... RENAME``
+    re-quotes the table name in the stored DDL, breaking byte-identity with a
+    fresh build), this renames the *old* table aside and recreates the target
+    verbatim from ``CORE_SCHEMA``. ``legacy_alter_table`` keeps that rename from
+    rewriting ``REFERENCES`` clauses in other tables that point at this one.
+    """
+    create_sql = _extract_create_table(table)
+    aside = f"_icarus_fkrepair_{table}"
+
+    before = conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]  # nosec B608 - table iterates the hardcoded ENTITY_TABLES tuple, not external input
+
+    # Remember the indexes and triggers that belong to this table so exactly
+    # those — no more, no less — are recreated afterward. Auto-created indexes
+    # (UNIQUE/PK constraints) have sql = NULL and are rebuilt by the CREATE
+    # TABLE itself, so they are excluded here.
+    attached = conn.execute(
+        "SELECT type, name, sql FROM sqlite_master "
+        "WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL",
+        (table,),
+    ).fetchall()
+
+    conn.execute("BEGIN")
+    # Drop the attached objects explicitly first so the rename/drop below can't
+    # leave a same-named orphan that would collide when we recreate them.
+    for obj_type, name, _ in attached:
+        conn.execute(f"DROP {obj_type} IF EXISTS [{name}]")
+
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        # legacy_alter_table keeps this rename from rewriting REFERENCES clauses
+        # in OTHER tables that point at this one.
+        conn.execute(f"ALTER TABLE [{table}] RENAME TO [{aside}]")
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
+
+    # Recreate the table verbatim -> stored DDL matches a fresh v6 database.
+    conn.execute(create_sql)
+
+    # Copy only columns the old table actually had. A legacy database may
+    # predate some non-provenance columns too; those are left to their column
+    # defaults in the rebuilt table rather than failing the copy.
+    new_cols = [row[1] for row in conn.execute(f"PRAGMA table_info([{table}])")]
+    old_cols = {row[1] for row in conn.execute(f"PRAGMA table_info([{aside}])")}
+    common = [c for c in new_cols if c in old_cols]
+    col_list = ", ".join(f"[{c}]" for c in common)
+    conn.execute(
+        f"INSERT INTO [{table}] ({col_list}) SELECT {col_list} FROM [{aside}]"  # nosec B608 - identifiers from ENTITY_TABLES and the tables' own PRAGMA table_info(), not external input
+    )
+    conn.execute(f"DROP TABLE [{aside}]")
+
+    # Recreate the remembered indexes/triggers from their original DDL.
+    for _, _, sql in attached:
+        conn.execute(sql)
+
+    violations = conn.execute(f"PRAGMA foreign_key_check([{table}])").fetchall()
+    if violations:
+        conn.rollback()
+        raise SchemaValidationError(
+            f"FK-parity rebuild of {table!r} would introduce foreign key "
+            f"violations: {violations!r}; rolled back"
+        )
+
+    after = conn.execute(f"SELECT COUNT(*) FROM [{table}]").fetchone()[0]  # nosec B608 - table iterates the hardcoded ENTITY_TABLES tuple, not external input
+    if after != before:  # pragma: no cover - copy is a straight column-wise SELECT
+        conn.rollback()
+        raise SchemaValidationError(
+            f"FK-parity rebuild of {table!r} changed row count {before} -> {after}"
+        )
+    conn.commit()
+
+
+def _repair_migrated_entity_fks(conn: sqlite3.Connection) -> None:
+    """Bring migrated entity tables to FK parity with a fresh v6 build.
+
+    ``ALTER TABLE ADD COLUMN`` cannot add a ``REFERENCES`` constraint, so a
+    database migrated up from v2/v3 reaches v6 with the ``source_version_id``
+    provenance column present but its ``-> versions(id)`` foreign key missing —
+    a schema divergence from a freshly initialized v6 database, where FK
+    enforcement does not protect provenance on the migrated database. This
+    rebuilds only the entity tables that actually lack the FK, so it is a safe
+    idempotent no-op on a fresh v6 database and on re-runs.
+    """
+    to_rebuild = [t for t in ENTITY_TABLES if _entity_table_needs_fk_repair(conn, t)]
+    if not to_rebuild:
+        return
+
+    prior_fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    conn.commit()  # PRAGMA foreign_keys is a no-op inside a transaction
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for table in to_rebuild:
+            _rebuild_entity_table_with_fk(conn, table)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise SchemaValidationError(
+                f"FK-parity repair left foreign key violations: {violations!r}"
+            )
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {'ON' if prior_fk else 'OFF'}")
+
+
 def _read_schema_version(conn: sqlite3.Connection) -> Optional[int]:
     """Read and validate the metadata schema version without changing the database."""
     metadata_exists = conn.execute(
@@ -830,6 +977,12 @@ def initialize_database(db_path: Path, metadata: Optional[dict] = None) -> dict:
                 "INSERT INTO metadata VALUES (?, ?)",
                 ("schema_version", str(SCHEMA_VERSION))
             )
+
+        # Restore fresh-vs-migrated schema parity: any DB that reached v6 by
+        # migration (or was stamped v6 by an older, buggy migration chain) is
+        # missing the source_version_id -> versions(id) FK that a fresh build
+        # has. Guarded and idempotent — a no-op on a correct fresh v6 DB.
+        _repair_migrated_entity_fks(conn)
 
         if metadata:
             for k, v in metadata.items():
