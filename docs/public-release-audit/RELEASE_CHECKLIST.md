@@ -13,39 +13,39 @@ green legacy suite.
 - [x] Clean-venv install of the **wheel**: `icarus parser list` shows real tiers;
       `icarus parser validate` passes; `build`/`query` complete. *(#32 — **#37 merged**)*
 - [x] CI has a job that builds+installs the **wheel** (not editable) and smoke-tests it.
-      *(#49 — **#37 merged**; hardened further in staged #52)*
+      *(#49 — **#37/#52 merged**)*
 - [x] Distribution channel decided: GitHub-release wheels for the first beta, HYGEIA
       pinned by commit, no PyPI until the HYGEIA git dep is resolved. *(D6)*
 
 ### Correct & trustworthy output
 - [x] Cross-database diffs use **natural keys**, never local row ids — both
       `structural_diff` **and** `observation_diff`, plus a stable entitlement-owner
-      identity. *(#33 — staged PR #38, verified; merge pending CI)*
+      identity. *(#33 — **#38 merged**, integrated CI green)*
 - [ ] Provenance populated: every entity row has `source_version_id` + `observed_time`.
       *(#40 — open)*
 - [x] `initialize_database` **refuses** a forward/newer/malformed/incomplete schema and
-      no longer restamps. *(#39 — staged PR #53, verified; merge pending CI)*
+      no longer restamps. *(#39 — **#53 merged**, integrated CI green)*
 - [ ] Fresh-vs-migrated parity verified at `sqlite_master` (tables/indexes/triggers/
       views). *(#29/DM-06 — open)*
 - [ ] Resume only on exact fingerprint match, else fail loud; existing-output refused;
       atomic `--fresh` (temp + replace). *(D2 decided; #45/#36 — fix pending)*
 - [x] FK enforcement ON for every write path; verify-phase `foreign_key_check` gate.
-      *(#44 — staged PR #54, verified; merge pending CI)*
+      *(#44 — **#54 merged**, integrated CI green)*
 
 ### Hostile-input safety
-- [ ] In-root symlinks are never read through to external targets, across all reader
-      families. *(#43)*
-- [ ] FIFO/special files, non-UTF-8 names, deeply-nested JSON, and compression bombs are
-      skipped-with-warning, not hang/abort/unbounded. *(#47, #25)*
+- [x] In-root symlinks are never read through to external targets, across all reader
+      families. *(#43 — **#62 merged**)*
+- [x] FIFO/special files, non-UTF-8 names, deeply-nested JSON, and compression bombs are
+      skipped-with-warning, not hang/abort/unbounded. *(#47 — **#62 merged**; residual: #25)*
 - [ ] Diff report escapes hostile values. *(#35)*
 
 ### Sanitization (confidentiality)
-- [ ] The sanitizer actually removes credentials/secrets (real HYGEIA wired **or**
-      hardened fallback). *(#41)*
-- [ ] Mandatory **post-sanitize verification gate** fails the build on any residual.
-      *(#42)*
-- [ ] The verifier never emits raw secret values; `metadata` and `*_fts` are covered.
-      *(#42)*
+- [x] The sanitizer actually removes credentials/secrets (HYGEIA canonical + fail-closed
+      + credential patterns). *(#41 — **#59 merged**)*
+- [x] Mandatory **post-sanitize verification gate** fails the build on any residual.
+      *(#42 — **#59 merged**)*
+- [x] The verifier never emits raw secret values; `metadata` and `*_fts` are covered.
+      *(#42 — **#59 merged**; HMAC-SHA256 fingerprints only)*
 
 ### Interop
 - [ ] Strict `stix2.parse` accepts entity **and** diff bundles; no dangling refs / dup
@@ -63,14 +63,13 @@ green legacy suite.
 - [ ] `SECURITY.md` with an approved disclosure channel; CONTRIBUTING/CHANGELOG present.
       *(#48)*
 - [x] CI actions SHA-pinned + Dependabot-managed; dependency scan (`pip-audit`) runs;
-      read-only token; full failure surface. *(#49 — staged PR #52, verified; merge pending CI)*
+      read-only token; full failure surface. *(#49 — **#52 merged**, integrated CI green)*
 
 ### Operational
-- [ ] Repository **public** (or private-Actions billing restored) so CI can run and the
-      staged blocker PRs can merge on a green matrix. The repo was public long enough for
-      every PR to record a green run, then reverted to private (new runs now no-start).
-      *(visibility/billing setting — owner action)*
-- [ ] Personal network parsers removed from the distribution. *(#31/D8 — staged PR #55, verified)*
+- [x] Repository **public** for the active remediation/CI window. Integrated `main`
+      passed all 13 jobs in run `29666394072`; private-repo Actions remain billing-gated.
+      *(visibility/billing setting — restore privacy after the batch)*
+- [x] Personal network parsers removed from the distribution. *(#31/D8 — **#55 merged**)*
 
 ## Stable gates (in addition)
 
@@ -84,8 +83,6 @@ green legacy suite.
 
 Each box maps to an issue with a reproduction and acceptance criteria. "Done" =
 that reproduction now yields the acceptance outcome **on the built artifact**, plus a
-regression test, plus a green CI matrix. Boxes checked above marked "staged PR … merge
-pending CI" have met the reproduction + regression-test bar and passed a green public
-run at least once, but are **not merged**; they finalize when the repo is public again
-and CI re-runs on the merge. A green matrix is necessary, not sufficient — negative
-paths and semantics were reviewed by hand.
+regression test, plus a green CI matrix. Checked remediation boxes above are merged to
+`main` and passed the fully integrated public run `29666394072`. A green matrix is
+necessary, not sufficient — negative paths and semantics were reviewed by hand.
