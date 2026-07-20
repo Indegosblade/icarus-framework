@@ -38,7 +38,7 @@
 | AC2 | Secret in A1 ends up in A3 and is shared as "clean" | HYGEIA canonical + fail-closed + mandatory post-sanitize gate | **Fixed/merged (#41/#42 → #59)** |
 | AC3 | Malformed/huge/nested input exhausts memory or hangs the run | FIFO skip, surrogate-escape, depth/decompression budgets | **Fixed/merged (#47 → #62)** — residual: cloudtrail size cap (#25) |
 | AC4 | Hostile file **name/path** injects into the diff Markdown report | none | **Open (#35)** |
-| AC5 | Recipient trusts an invalid STIX bundle / dangling refs | regex shape tests only | **Open — strict parser rejects it (#21)** |
+| AC5 | Recipient trusts an invalid STIX bundle / dangling refs | deterministic RFC-4122 `uuid5` ids, valid refs/timestamps | **Fixed/merged (#21 → #61)** |
 | AC6 | Consumer acts on a false "moved"/"reassigned" diff edge | natural-key diff throughout | **Fixed/merged — structural_diff + observation_diff + stable entitlement owner (#38)** |
 | AC7 | Untrusted **SQLite** input opened read-write / runs on hostile DB | diff opens `mode=ro&immutable=1` | Diff safe; verify `sqlite_parser`/`query` paths |
 | AC8 | Malicious entry-point plugin executes on import | Python trust model | Document + consider opt-in plugin loading |
@@ -49,8 +49,9 @@
 
 - **Confidentiality:** AC1 (symlink read-out), AC2 (secret leak), SAN-07 (verifier echoes
   secret). **Highest-priority class — two blockers.**
-- **Integrity:** AC5 (invalid STIX), AC6 (false diffs), AC10 (orphan FKs), provenance NULL
-  (#40), forward-version relabel (#39), checkpoint wrong-DB (#45).
+- **Integrity:** AC5 (invalid STIX → fixed #61), AC6 (false diffs → fixed #38), AC10
+  (orphan FKs → fixed #54), provenance (#40 → fixed #60), forward-version relabel
+  (#39 → fixed #53). Residual: checkpoint wrong-DB (#45).
 - **Availability:** AC3 (DoS via hostile input, #47).
 - **Supply-chain:** AC8 (plugins), AC9 (git dep + mutable action pins, #49).
 

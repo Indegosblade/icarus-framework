@@ -21,10 +21,10 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | ID | Issue | Title | Status |
 |---|---|---|---|
 | DIFF-01 | #33 | Cross-DB diff compared local autoincrement ids → false/hidden moves | **MERGED** (#38, `39f3b11`; structural **and** observation diff) |
-| STIX-01…08 | #21 | STIX export not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | open (escalated) |
+| STIX-01…08 | #21 | STIX export not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | **MERGED** (#61, `ab26f1d`; deterministic RFC-4122 `uuid5` ids, valid refs/timestamps) |
 | DM-03 | #45 | Resume with changed `--source`/`--parser` → wrong database | open — D2 decided, fix pending |
 | PARSER-01/02 | #43 | Parsers dereference in-root symlinks → read outside the source tree | **MERGED** (#62, `31338cd`; symlinks cataloged, never dereferenced) |
-| PROV-01 (DM-01) | #40 | Provenance NULL on every entity despite finalized versions row | open |
+| PROV-01 (DM-01) | #40 | Provenance NULL on every entity despite finalized versions row | **MERGED** (#60, `d6eb08e`; pipeline back-fills `source_version_id`/`observed_time` on parser output) |
 | SCHEMA-01 (DM-05) | #39 | `initialize_database` silently relabels a future schema to v6 | **MERGED** (#53, `1abbeb2`) |
 | ER-01…10 | #46 | Entity-resolver invariants unsound (experimental) | open (epic) — D3: excluded from beta promise |
 
@@ -35,7 +35,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | CLI-01 | #34 | `query` is read-write + arbitrary `--sql`; no schema check; weak exit codes *(owner decision)* |
 | DIFF-02 | #35 | `full_diff` incomplete; NULL-hash blind spot; report not escaped |
 | BUILD-01 (DM-04) | #36 | Existing-output reuse/union; `--fresh` misnomer; no atomic write *(owner decision)* |
-| SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) — **MERGED** (#59: mandatory post-sanitize gate, metadata/FTS tables scanned, verifier returns fingerprints not matches) |
+| SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) — **partially addressed** (#59: post-sanitize gate, metadata + FTS-virtual-table scanning, fingerprint-only verifier). **Residual OPEN (SAN-09):** `atoms` has no `AFTER UPDATE` trigger, so redacting an `atoms` row does not re-sync `atoms_fts` — a secret can persist in the FTS index (the post-gate scans `atoms_fts` and would fail closed, but the redaction itself is incomplete). Issue #42 still open. |
 | DM-02 | #44 | FK enforcement OFF on all parser/pipeline write paths — **MERGED** (#54, `f1db5ac`; verify-phase `foreign_key_check` gate) |
 | PARSER-03/04/05, PHI-01/02 | #47 | Hostile-input: FIFO hang, non-UTF-8 abort, JSON RecursionError, gzip-tar decompression, invalid IPs — **MERGED** (#62, `31338cd`) |
 | CI-REL-01 | #49 | CI editable-only, mutable action pins, no dependency scan — **fixed/merged** (#37/#52) |
@@ -77,7 +77,7 @@ credential (root cause = #41) — **resolved by deletion** in merged PR #55 (dec
 
 ## Note on prior audit claims
 
-`README.md` and the historical `PRODUCTION_AUDIT` describe a "provenance fix" as
-landed. That fix added **run-level** tracking (the `versions` row) only; **entity-level**
-provenance (`source_version_id`/`observed_time`) is still NULL on real output (#40).
-Do not treat the historical claim as satisfying the provenance guarantee.
+The historical `PRODUCTION_AUDIT` "provenance fix" added only **run-level** tracking
+(the `versions` row); **entity-level** provenance (`source_version_id`/`observed_time`)
+was left NULL on real output. That entity-level gap is now genuinely closed in **#60**
+(`d6eb08e`): a pipeline phase back-fills both columns on parser output after extraction.
