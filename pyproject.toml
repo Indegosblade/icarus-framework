@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "icarus-framework"
-version = "1.4.0"
+version = "4.0.0b1"
 description = "Extract entities from structured data sources into queryable SQLite databases"
 readme = "README.md"
 license = {text = "PolyForm-Noncommercial-1.0.0"}
