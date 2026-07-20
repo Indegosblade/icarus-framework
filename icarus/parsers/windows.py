@@ -53,18 +53,29 @@ class WindowsParser(BaseParser):
                 for fname in filenames:
                     path = Path(dirpath) / fname
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         ext = path.suffix.lower()
                         rel = self._rel_path(path, source)
+                        filename = self._safe_text(path.name)
+                        is_link = kind == "symlink"
+                        file_type = "symlink" if is_link else FILE_TYPES.get(ext, "other")
 
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, ext or None, st.st_size,
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (rel, filename, ext or None, st.st_size,
                              self._safe_hash(path, st.st_size),
-                             FILE_TYPES.get(ext, "other")),
+                             file_type, int(is_link), self._symlink_target(path)),
                         )
                         stats["files"] += 1
+
+                        if is_link:
+                            if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
+                                conn.commit()
+                            continue
 
                         if ext in (".exe", ".dll") and self._check_magic(path, PE_MAGIC):
                             row = conn.execute(
@@ -79,7 +90,7 @@ class WindowsParser(BaseParser):
                                     conn.execute(
                                         "INSERT INTO binaries "
                                         "(file_id,executable_name,arch) VALUES (?,?,?)",
-                                        (row[0], path.name, _detect_pe_arch(path)),
+                                        (row[0], filename, _detect_pe_arch(path)),
                                     )
                                     stats["binaries"] += 1
 
@@ -87,7 +98,7 @@ class WindowsParser(BaseParser):
                             conn.execute(
                                 "INSERT OR IGNORE INTO frameworks "
                                 "(name,path,is_private) VALUES (?,?,0)",
-                                (path.stem, rel),
+                                (self._safe_text(path.stem), rel),
                             )
                             stats["frameworks"] += 1
                     except (PermissionError, OSError):
@@ -105,7 +116,7 @@ class WindowsParser(BaseParser):
 
 def _detect_pe_arch(path: Path) -> str:
     try:
-        with open(path, "rb") as f:
+        with BaseParser._open_regular(path) as f:
             f.seek(0x3C)
             pe_offset = struct.unpack("<I", f.read(4))[0]
             f.seek(pe_offset + 4)

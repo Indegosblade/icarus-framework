@@ -43,17 +43,24 @@ class BinaryEntropyParser(BaseParser):
                 for fname in filenames:
                     path = Path(dirpath) / fname
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         ext = path.suffix.lower()
                         rel = self._rel_path(path, source)
-                        file_type = "unknown"
-                        if ext in KNOWN_EXTENSIONS:
+                        is_link = kind == "symlink"
+                        file_type = "symlink" if is_link else "unknown"
+                        if not is_link and ext in KNOWN_EXTENSIONS:
                             file_type = ext.lstrip(".")
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, ext or None, st.st_size,
-                             self._safe_hash(path, st.st_size), file_type),
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (
+                                rel, self._safe_text(path.name), ext or None, st.st_size,
+                                self._safe_hash(path, st.st_size), file_type,
+                                int(is_link), self._symlink_target(path),
+                            ),
                         )
                         stats["files"] += 1
                     except (PermissionError, OSError):

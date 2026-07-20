@@ -2,6 +2,7 @@
 
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,23 +41,39 @@ class JsonParser(BaseParser):
                     if not fname.lower().endswith(".json"):
                         continue
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         rel = self._rel_path(path, source)
+                        is_link = kind == "symlink"
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, ".json", st.st_size,
-                             self._safe_hash(path, st.st_size), "json"),
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (
+                                rel, self._safe_text(path.name), ".json", st.st_size,
+                                self._safe_hash(path, st.st_size),
+                                "symlink" if is_link else "json",
+                                int(is_link), self._symlink_target(path),
+                            ),
                         )
                         stats["files"] += 1
 
                         try:
-                            if 0 < st.st_size <= _MAX_JSON_BYTES:
-                                data = json.loads(path.read_text(errors="replace"))
+                            if not is_link and 0 < st.st_size <= _MAX_JSON_BYTES:
+                                with self._open_regular(path) as handle:
+                                    raw = handle.read(_MAX_JSON_BYTES + 1)
+                                data = (
+                                    json.loads(raw.decode(errors="replace"))
+                                    if len(raw) <= _MAX_JSON_BYTES
+                                    else None
+                                )
                             else:
                                 data = None
                             if isinstance(data, dict):
-                                keys = ", ".join(sorted(data.keys())[:20])
+                                keys = ", ".join(
+                                    self._safe_text(key) for key in sorted(data.keys())[:20]
+                                )
                                 file_row = conn.execute(
                                     "SELECT id FROM files WHERE path=?", (rel,)
                                 ).fetchone()
@@ -80,8 +97,18 @@ class JsonParser(BaseParser):
                                             ("files", file_row[0],
                                              "json_keys", keys),
                                         )
-                        except (json.JSONDecodeError, UnicodeDecodeError):
+                        except (
+                            json.JSONDecodeError,
+                            UnicodeDecodeError,
+                        ):
                             pass
+                        except (RecursionError, MemoryError):
+                            warnings.warn(
+                                "Skipping JSON that exceeds parser depth/memory limits: "
+                                f"{self._safe_text(str(path))}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
                     except (PermissionError, OSError):
                         continue
                     if stats["files"] % BATCH_COMMIT_INTERVAL == 0:

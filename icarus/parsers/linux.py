@@ -55,18 +55,29 @@ class LinuxParser(BaseParser):
                 for fname in filenames:
                     path = Path(dirpath) / fname
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         ext = path.suffix.lower()
                         rel = self._rel_path(path, source)
+                        filename = self._safe_text(path.name)
+                        is_link = kind == "symlink"
+                        file_type = "symlink" if is_link else FILE_TYPES.get(ext, "other")
 
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, ext or None, st.st_size,
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (rel, filename, ext or None, st.st_size,
                              self._safe_hash(path, st.st_size),
-                             FILE_TYPES.get(ext, "other")),
+                             file_type, int(is_link), self._symlink_target(path)),
                         )
                         stats["files"] += 1
+
+                        if is_link:
+                            if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
+                                conn.commit()
+                            continue
 
                         if in_bin and self._check_magic(path, ELF_MAGIC):
                             row = conn.execute(
@@ -81,7 +92,7 @@ class LinuxParser(BaseParser):
                                     conn.execute(
                                         "INSERT INTO binaries "
                                         "(file_id,executable_name,arch) VALUES (?,?,?)",
-                                        (row[0], path.name, _detect_elf_arch(path)),
+                                        (row[0], filename, _detect_elf_arch(path)),
                                     )
                                     stats["binaries"] += 1
 
@@ -89,7 +100,11 @@ class LinuxParser(BaseParser):
                             conn.execute(
                                 "INSERT OR IGNORE INTO daemons "
                                 "(label,plist_path,program) VALUES (?,?,?)",
-                                (path.stem, f"{rel_dir}/{fname}", _parse_execstart(path)),
+                                (
+                                    self._safe_text(path.stem),
+                                    rel.lstrip("/"),
+                                    _parse_execstart(path),
+                                ),
                             )
                             stats["daemons"] += 1
 
@@ -97,7 +112,7 @@ class LinuxParser(BaseParser):
                             conn.execute(
                                 "INSERT OR IGNORE INTO frameworks "
                                 "(name,path,is_private) VALUES (?,?,0)",
-                                (path.name, rel),
+                                (filename, rel),
                             )
                             stats["frameworks"] += 1
                     except (PermissionError, OSError):
@@ -132,9 +147,11 @@ def _parse_execstart(path: Path) -> str:
     absent/unreadable. systemd allows leading modifier chars (-, @, +, !, :) on
     the command; the executable is the first whitespace-delimited token."""
     try:
-        if path.stat().st_size > 1_000_000:
+        st, kind = BaseParser._file_kind(path)
+        if st is None or kind != "regular" or st.st_size > 1_000_000:
             return ""
-        text = path.read_text(errors="ignore")
+        with BaseParser._open_regular(path) as handle:
+            text = handle.read(1_000_001).decode(errors="ignore")
     except OSError:
         return ""
     m = _EXECSTART_RE.search(text)
@@ -146,7 +163,7 @@ def _parse_execstart(path: Path) -> str:
 
 def _detect_elf_arch(path: Path) -> str:
     try:
-        with open(path, "rb") as f:
+        with BaseParser._open_regular(path) as f:
             f.seek(18)
             machine = struct.unpack("<H", f.read(2))[0]
             return ELF_ARCH.get(machine, "unknown")

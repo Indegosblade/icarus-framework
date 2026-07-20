@@ -51,7 +51,7 @@ LAUNCHD_DIRS = [
 def _load_plist(path: Path) -> Optional[dict]:
     """Load an XML or binary plist. Returns a dict, or None on any failure."""
     try:
-        with open(path, "rb") as f:
+        with BaseParser._open_regular(path) as f:
             data = plistlib.load(f)
         return data if isinstance(data, dict) else None
     except (OSError, PermissionError, ValueError, plistlib.InvalidFileException):
@@ -146,33 +146,46 @@ class MacosParser(BaseParser):
     def _walk_files(self, conn, source: Path, stats: Dict[str, int]) -> None:
         for dirpath, dirs, filenames in os.walk(source, onerror=lambda e: None):
             # Prune hidden dirs and caches in place (avoids the rel_dir='.' trap).
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "__pycache__"]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".")
+                and d != "__pycache__"
+                and not (Path(dirpath) / d).is_symlink()
+            ]
             for fname in filenames:
                 path = Path(dirpath) / fname
-                try:
-                    st = path.stat()
-                except (OSError, PermissionError):
+                st, kind = self._file_kind(path)
+                if st is None or kind in ("special", "unreadable"):
                     continue
                 # Never dereference symlinks — a link may target a file outside
                 # the source tree. Catalog it, but don't read its content.
-                is_link = path.is_symlink()
+                is_link = kind == "symlink"
                 try:
                     rel = self._rel_path(path, source)
                     ext = path.suffix.lower()
+                    filename = self._safe_text(path.name)
                     is_macho = False
                     if not is_link:
                         try:
-                            with open(path, "rb") as fh:
+                            with self._open_regular(path) as fh:
                                 is_macho = is_macho_magic(fh.read(4))
                         except (OSError, PermissionError):
                             is_macho = False
-                    file_type = "binary" if is_macho else FILE_TYPES.get(ext, "other")
+                    file_type = (
+                        "symlink" if is_link
+                        else "binary" if is_macho
+                        else FILE_TYPES.get(ext, "other")
+                    )
 
                     conn.execute(
                         "INSERT OR IGNORE INTO files "
-                        "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                        (rel, path.name, ext or None, st.st_size,
-                         self._safe_hash(path, st.st_size), file_type),
+                        "(path,filename,extension,size,sha256,file_type,"
+                        "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            rel, filename, ext or None, st.st_size,
+                            self._safe_hash(path, st.st_size), file_type,
+                            int(is_link), self._symlink_target(path),
+                        ),
                     )
                     stats["files"] += 1
 
@@ -208,7 +221,7 @@ class MacosParser(BaseParser):
         conn.execute(
             "INSERT INTO binaries (file_id,bundle_id,executable_name,arch,code_sign_flags) "
             "VALUES (?,?,?,?,?)",
-            (file_id, _text(bundle_id), path.name, info.get("arch"),
+            (file_id, _text(bundle_id), self._safe_text(path.name), info.get("arch"),
              hex(flags) if isinstance(flags, int) else None),
         )
         stats["binaries"] += 1
@@ -235,7 +248,7 @@ class MacosParser(BaseParser):
     def _extract_daemons(self, conn, source: Path, stats: Dict[str, int]) -> None:
         for parts in LAUNCHD_DIRS:
             ld_dir = source.joinpath(*parts)
-            if not ld_dir.is_dir():
+            if self._path_has_symlink(ld_dir, source) or not ld_dir.is_dir():
                 continue
             try:
                 entries = sorted(ld_dir.glob("*.plist"))
@@ -247,7 +260,7 @@ class MacosParser(BaseParser):
                     continue
                 label = pl.get("Label")
                 if not isinstance(label, str) or not label:
-                    label = plist_path.stem  # keep label a clean string (lookup key)
+                    label = self._safe_text(plist_path.stem)
                 prog_args = pl.get("ProgramArguments")
                 program = pl.get("Program")
                 if not program and isinstance(prog_args, list) and prog_args:
@@ -299,9 +312,11 @@ class MacosParser(BaseParser):
 
     def _extract_kexts(self, conn, source: Path, stats: Dict[str, int]) -> None:
         ext_dir = source / "System" / "Library" / "Extensions"
-        if not ext_dir.is_dir():
+        if self._path_has_symlink(ext_dir, source) or not ext_dir.is_dir():
             return
         for kext in sorted(ext_dir.glob("*.kext")):
+            if kext.is_symlink():
+                continue
             info = _load_plist(kext / "Info.plist")
             if not info:
                 continue
@@ -343,9 +358,11 @@ class MacosParser(BaseParser):
     def _extract_frameworks(self, conn, source: Path, stats: Dict[str, int]) -> None:
         for sub, is_private in (("Frameworks", 0), ("PrivateFrameworks", 1)):
             fw_dir = source / "System" / "Library" / sub
-            if not fw_dir.is_dir():
+            if self._path_has_symlink(fw_dir, source) or not fw_dir.is_dir():
                 continue
             for fw in sorted(fw_dir.glob("*.framework")):
+                if fw.is_symlink():
+                    continue
                 info = _load_plist(fw / "Info.plist") or {}
                 rel = self._rel_path(fw, source)
                 conn.execute(
@@ -364,13 +381,16 @@ class MacosParser(BaseParser):
             source / "usr" / "share" / "sandbox",
         ]
         for sb_dir in sb_dirs:
-            if not sb_dir.is_dir():
+            if self._path_has_symlink(sb_dir, source) or not sb_dir.is_dir():
                 continue
             try:
                 sb_files = sorted(sb_dir.rglob("*.sb"))
             except (OSError, PermissionError):
                 continue
             for sb in sb_files:
+                _, kind = self._file_kind(sb)
+                if kind != "regular":
+                    continue
                 rel = self._rel_path(sb, source)
                 conn.execute(
                     "INSERT OR IGNORE INTO sandbox_profiles (name,profile_path) VALUES (?,?)",

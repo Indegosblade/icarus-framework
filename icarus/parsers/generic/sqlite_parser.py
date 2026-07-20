@@ -38,20 +38,28 @@ class SqliteParser(BaseParser):
                         continue
                     path = Path(dirpath) / fname
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         rel = self._rel_path(path, source)
+                        is_link = kind == "symlink"
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, path.suffix.lower(), st.st_size,
-                             self._safe_hash(path, st.st_size), "database"),
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (
+                                rel, self._safe_text(path.name), path.suffix.lower(),
+                                st.st_size, self._safe_hash(path, st.st_size),
+                                "symlink" if is_link else "database",
+                                int(is_link), self._symlink_target(path),
+                            ),
                         )
                         stats["files"] += 1
 
                         file_row = conn.execute(
                             "SELECT id FROM files WHERE path=?", (rel,)
                         ).fetchone()
-                        if file_row:
+                        if file_row and not is_link:
                             try:
                                 # Open the untrusted source DB read-only and
                                 # immutable via a safe file: URI. immutable=1
