@@ -77,7 +77,8 @@ class WindowsParser(BaseParser):
                                 conn.commit()
                             continue
 
-                        if ext in (".exe", ".dll") and self._check_magic(path, PE_MAGIC):
+                        is_pe = ext in (".exe", ".dll") and self._check_magic(path, PE_MAGIC)
+                        if is_pe:
                             row = conn.execute(
                                 "SELECT id FROM files WHERE path=?", (rel,)
                             ).fetchone()
@@ -94,13 +95,18 @@ class WindowsParser(BaseParser):
                                     )
                                     stats["binaries"] += 1
 
-                        if ext == ".dll":
-                            conn.execute(
+                        # A file merely named *.dll is not a framework unless it
+                        # actually carries PE magic (#28) — mirrors the binaries
+                        # path above, which already validates MZ before trusting
+                        # the extension.
+                        if ext == ".dll" and is_pe:
+                            cur = conn.execute(
                                 "INSERT OR IGNORE INTO frameworks "
                                 "(name,path,is_private) VALUES (?,?,0)",
                                 (self._safe_text(path.stem), rel),
                             )
-                            stats["frameworks"] += 1
+                            if cur.rowcount:
+                                stats["frameworks"] += 1
                     except (PermissionError, OSError):
                         continue
                     if stats["files"] % BATCH_COMMIT_INTERVAL == 0:

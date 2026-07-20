@@ -19,6 +19,17 @@ ELF_ARCH = {0x03: "x86", 0x3E: "x86_64", 0xB7: "aarch64", 0x28: "arm", 0xF3: "ri
 FILE_TYPES = {".so": "shared_lib", ".service": "systemd_unit", ".conf": "config", ".py": "script"}
 BIN_DIRS = frozenset({"usr/bin", "usr/sbin", "bin", "sbin", "usr/libexec"})
 LIB_DIRS = frozenset({"usr/lib", "lib", "usr/lib64", "lib64"})
+# Standard systemd unit directories across non-merged, usr-merged, and
+# admin-override layouts. systemd unit files placed directly in any of these
+# are recognized (#23) — most real rootfs images use usr/lib or etc, not the
+# single non-merged lib/systemd/system path this used to require.
+SYSTEMD_UNIT_DIRS = frozenset({
+    "lib/systemd/system",
+    "usr/lib/systemd/system",
+    "usr/local/lib/systemd/system",
+    "etc/systemd/system",
+    "run/systemd/system",
+})
 
 
 class LinuxParser(BaseParser):
@@ -50,7 +61,7 @@ class LinuxParser(BaseParser):
                     continue
                 in_bin = _match_dir(rel_dir, BIN_DIRS)
                 in_lib = _match_dir(rel_dir, LIB_DIRS)
-                is_systemd = rel_dir == "lib/systemd/system"
+                is_systemd = rel_dir in SYSTEMD_UNIT_DIRS
 
                 for fname in filenames:
                     path = Path(dirpath) / fname
@@ -97,7 +108,7 @@ class LinuxParser(BaseParser):
                                     stats["binaries"] += 1
 
                         if is_systemd and ext == ".service":
-                            conn.execute(
+                            cur = conn.execute(
                                 "INSERT OR IGNORE INTO daemons "
                                 "(label,plist_path,program) VALUES (?,?,?)",
                                 (
@@ -106,15 +117,17 @@ class LinuxParser(BaseParser):
                                     _parse_execstart(path),
                                 ),
                             )
-                            stats["daemons"] += 1
+                            if cur.rowcount:
+                                stats["daemons"] += 1
 
                         if in_lib and ".so" in fname and self._check_magic(path, ELF_MAGIC):
-                            conn.execute(
+                            cur = conn.execute(
                                 "INSERT OR IGNORE INTO frameworks "
                                 "(name,path,is_private) VALUES (?,?,0)",
                                 (filename, rel),
                             )
-                            stats["frameworks"] += 1
+                            if cur.rowcount:
+                                stats["frameworks"] += 1
                     except (PermissionError, OSError):
                         continue
                     if stats["files"] % BATCH_COMMIT_INTERVAL == 0:
