@@ -1,24 +1,24 @@
--- ICARUS Database Schema (v4)
--- Modular intelligence framework for structured data analysis
--- SQLite 3.35+ required (FTS5 support)
+-- ICARUS Database Schema (v6)
+-- Modular intelligence framework for structured data analysis.
+-- SQLite 3.35+ required (FTS5 support).
+--
+-- GENERATED REFERENCE — do not hand-edit. The authoritative schema lives in
+-- icarus/core/schema.py (SCHEMA_VERSION = 6); this file is a dump of a freshly
+-- initialized database for documentation and external tooling. Regenerate after
+-- any schema.py change. 17 normalized tables, 3 FTS5 indexes, 3 views.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 -- ============================================================
--- Metadata
+-- Tables
 -- ============================================================
-
-CREATE TABLE IF NOT EXISTS metadata (
+CREATE TABLE metadata (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
--- ============================================================
--- Provenance: Pipeline Run Tracking
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS versions (
+CREATE TABLE versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,
     parser_name TEXT NOT NULL,
@@ -29,11 +29,7 @@ CREATE TABLE IF NOT EXISTS versions (
     metadata TEXT
 );
 
--- ============================================================
--- Core Entity Tables (all carry provenance columns)
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS files (
+CREATE TABLE files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT NOT NULL UNIQUE,
     filename TEXT NOT NULL,
@@ -53,7 +49,7 @@ CREATE TABLE IF NOT EXISTS files (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS binaries (
+CREATE TABLE binaries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id INTEGER NOT NULL REFERENCES files(id),
     bundle_id TEXT,
@@ -75,7 +71,38 @@ CREATE TABLE IF NOT EXISTS binaries (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS daemons (
+CREATE TABLE frameworks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    bundle_id TEXT,
+    version TEXT,
+    is_private INTEGER DEFAULT 0,
+    binary_id INTEGER REFERENCES binaries(id),
+    exported_symbols_count INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
+);
+
+CREATE TABLE kexts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle_id TEXT NOT NULL UNIQUE,
+    name TEXT,
+    version TEXT,
+    file_id INTEGER REFERENCES files(id),
+    dependencies TEXT,
+    personalities TEXT,
+    iokit_classes TEXT,
+    has_user_client INTEGER DEFAULT 0,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED'
+);
+
+CREATE TABLE daemons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL UNIQUE,
     plist_path TEXT NOT NULL,
@@ -96,7 +123,18 @@ CREATE TABLE IF NOT EXISTS daemons (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS entitlements (
+CREATE TABLE mach_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    daemon_id INTEGER NOT NULL REFERENCES daemons(id),
+    service_name TEXT NOT NULL,
+    source_version_id INTEGER REFERENCES versions(id),
+    confidence REAL DEFAULT 1.0,
+    observed_time TEXT,
+    marking TEXT DEFAULT 'UNCLASSIFIED',
+    UNIQUE(daemon_id, service_name)
+);
+
+CREATE TABLE entitlements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     binary_id INTEGER NOT NULL REFERENCES binaries(id),
     key TEXT NOT NULL,
@@ -108,7 +146,7 @@ CREATE TABLE IF NOT EXISTS entitlements (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS sandbox_profiles (
+CREATE TABLE sandbox_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     profile_path TEXT,
@@ -122,7 +160,7 @@ CREATE TABLE IF NOT EXISTS sandbox_profiles (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS sandbox_rules (
+CREATE TABLE sandbox_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     profile_id INTEGER NOT NULL REFERENCES sandbox_profiles(id),
     operation TEXT NOT NULL,
@@ -136,42 +174,7 @@ CREATE TABLE IF NOT EXISTS sandbox_rules (
     marking TEXT DEFAULT 'UNCLASSIFIED'
 );
 
-CREATE TABLE IF NOT EXISTS kexts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    bundle_id TEXT NOT NULL UNIQUE,
-    name TEXT,
-    version TEXT,
-    file_id INTEGER REFERENCES files(id),
-    dependencies TEXT,
-    personalities TEXT,
-    iokit_classes TEXT,
-    has_user_client INTEGER DEFAULT 0,
-    source_version_id INTEGER REFERENCES versions(id),
-    confidence REAL DEFAULT 1.0,
-    observed_time TEXT,
-    marking TEXT DEFAULT 'UNCLASSIFIED'
-);
-
-CREATE TABLE IF NOT EXISTS frameworks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    path TEXT NOT NULL UNIQUE,
-    bundle_id TEXT,
-    version TEXT,
-    is_private INTEGER DEFAULT 0,
-    binary_id INTEGER REFERENCES binaries(id),
-    exported_symbols_count INTEGER DEFAULT 0,
-    source_version_id INTEGER REFERENCES versions(id),
-    confidence REAL DEFAULT 1.0,
-    observed_time TEXT,
-    marking TEXT DEFAULT 'UNCLASSIFIED'
-);
-
--- ============================================================
--- Event Layer: Observations
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS observations (
+CREATE TABLE observations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_table TEXT NOT NULL,
     entity_id INTEGER NOT NULL,
@@ -183,11 +186,7 @@ CREATE TABLE IF NOT EXISTS observations (
     confidence REAL DEFAULT 1.0
 );
 
--- ============================================================
--- Entity Resolution: Atom/Bag/EventLog
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS atoms (
+CREATE TABLE atoms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_version_id INTEGER NOT NULL REFERENCES versions(id),
     entity_type TEXT NOT NULL,
@@ -197,22 +196,23 @@ CREATE TABLE IF NOT EXISTS atoms (
     UNIQUE(source_version_id, entity_type, source_key)
 );
 
-CREATE TABLE IF NOT EXISTS bags (
+CREATE TABLE bags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_type TEXT NOT NULL,
     canonical_key TEXT,
     created_at TEXT NOT NULL,
     resolved_at TEXT,
-    atom_count INTEGER DEFAULT 1
+    atom_count INTEGER DEFAULT 1,
+    score REAL
 );
 
-CREATE TABLE IF NOT EXISTS bag_atoms (
+CREATE TABLE bag_atoms (
     bag_id INTEGER NOT NULL REFERENCES bags(id),
     atom_id INTEGER NOT NULL REFERENCES atoms(id),
     PRIMARY KEY(bag_id, atom_id)
 );
 
-CREATE TABLE IF NOT EXISTS resolution_event_log (
+CREATE TABLE resolution_event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_type TEXT NOT NULL,
     bag_id INTEGER NOT NULL REFERENCES bags(id),
@@ -223,58 +223,42 @@ CREATE TABLE IF NOT EXISTS resolution_event_log (
     timestamp TEXT NOT NULL
 );
 
--- ============================================================
--- Indexes
--- ============================================================
+CREATE TABLE match_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    atom_a INTEGER NOT NULL REFERENCES atoms(id),
+    atom_b INTEGER NOT NULL REFERENCES atoms(id),
+    score REAL NOT NULL,
+    features TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(atom_a, atom_b)
+);
 
-CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
-CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension);
-CREATE INDEX IF NOT EXISTS idx_files_type ON files(file_type);
-CREATE INDEX IF NOT EXISTS idx_files_size ON files(size DESC);
-CREATE INDEX IF NOT EXISTS idx_binaries_bundle ON binaries(bundle_id);
-CREATE INDEX IF NOT EXISTS idx_binaries_file ON binaries(file_id);
-CREATE INDEX IF NOT EXISTS idx_daemons_label ON daemons(label);
-CREATE INDEX IF NOT EXISTS idx_daemons_sandbox ON daemons(sandbox_profile);
-CREATE INDEX IF NOT EXISTS idx_ent_binary ON entitlements(binary_id);
-CREATE INDEX IF NOT EXISTS idx_ent_key ON entitlements(key);
-CREATE INDEX IF NOT EXISTS idx_ent_key_value ON entitlements(key, value);
-CREATE INDEX IF NOT EXISTS idx_sandbox_name ON sandbox_profiles(name);
-CREATE INDEX IF NOT EXISTS idx_rules_profile ON sandbox_rules(profile_id);
-CREATE INDEX IF NOT EXISTS idx_rules_operation ON sandbox_rules(operation);
-CREATE INDEX IF NOT EXISTS idx_kexts_bundle ON kexts(bundle_id);
-CREATE INDEX IF NOT EXISTS idx_frameworks_name ON frameworks(name);
-CREATE INDEX IF NOT EXISTS idx_obs_entity ON observations(entity_table, entity_id);
-CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at);
-CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(event_type);
-CREATE INDEX IF NOT EXISTS idx_atoms_type ON atoms(entity_type);
-CREATE INDEX IF NOT EXISTS idx_atoms_version ON atoms(source_version_id);
-CREATE INDEX IF NOT EXISTS idx_bags_type ON bags(entity_type);
-CREATE INDEX IF NOT EXISTS idx_relog_bag ON resolution_event_log(bag_id);
-
--- ============================================================
--- Full-Text Search
--- ============================================================
-
-CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+CREATE VIRTUAL TABLE files_fts USING fts5(
     path, filename, file_type,
     content='files', content_rowid='id'
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS daemons_fts USING fts5(
+CREATE VIRTUAL TABLE daemons_fts USING fts5(
     label, program, mach_services, sandbox_profile,
     content='daemons', content_rowid='id'
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS atoms_fts USING fts5(
+CREATE VIRTUAL TABLE atoms_fts USING fts5(
     entity_type, source_key, properties,
     content='atoms', content_rowid='id'
 );
 
 -- ============================================================
--- Intelligence Views
+-- Views
 -- ============================================================
+CREATE VIEW v_kernel_attack_surface AS
+SELECT
+    k.bundle_id, k.name AS kext_name,
+    k.version, k.personalities, k.iokit_classes
+FROM kexts k WHERE k.has_user_client = 1;
 
-CREATE VIEW IF NOT EXISTS v_sandbox_escape_surface AS
+CREATE VIEW v_sandbox_escape_surface AS
 SELECT
     d.label, d.program, d.mach_services,
     d.sandbox_profile, d.user_name,
@@ -286,13 +270,7 @@ WHERE (d.sandbox_profile IS NULL OR d.sandbox_profile = '')
 AND d.mach_services IS NOT NULL
 GROUP BY d.id;
 
-CREATE VIEW IF NOT EXISTS v_kernel_attack_surface AS
-SELECT
-    k.bundle_id, k.name AS kext_name,
-    k.version, k.personalities, k.iokit_classes
-FROM kexts k WHERE k.has_user_client = 1;
-
-CREATE VIEW IF NOT EXISTS v_test_binaries AS
+CREATE VIEW v_test_binaries AS
 SELECT f.path, b.bundle_id, b.executable_name
 FROM binaries b
 JOIN files f ON b.file_id = f.id
@@ -300,49 +278,105 @@ WHERE f.path LIKE '%/test%' OR f.path LIKE '%/debug%'
     OR b.bundle_id LIKE '%test%' OR b.bundle_id LIKE '%debug%';
 
 -- ============================================================
--- FTS5 Sync Triggers (external content tables)
+-- Triggers
 -- ============================================================
-
-CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-    INSERT INTO files_fts(rowid, path, filename, file_type)
-    VALUES (new.id, new.path, new.filename, new.file_type);
+CREATE TRIGGER atoms_ad AFTER DELETE ON atoms BEGIN
+    INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
+    VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
 END;
 
-CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-    INSERT INTO files_fts(files_fts, rowid, path, filename, file_type)
-    VALUES ('delete', old.id, old.path, old.filename, old.file_type);
-END;
-
-CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
-    INSERT INTO files_fts(files_fts, rowid, path, filename, file_type)
-    VALUES ('delete', old.id, old.path, old.filename, old.file_type);
-    INSERT INTO files_fts(rowid, path, filename, file_type)
-    VALUES (new.id, new.path, new.filename, new.file_type);
-END;
-
-CREATE TRIGGER IF NOT EXISTS daemons_ai AFTER INSERT ON daemons BEGIN
-    INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
-    VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
-END;
-
-CREATE TRIGGER IF NOT EXISTS daemons_ad AFTER DELETE ON daemons BEGIN
-    INSERT INTO daemons_fts(daemons_fts, rowid, label, program, mach_services, sandbox_profile)
-    VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
-END;
-
-CREATE TRIGGER IF NOT EXISTS daemons_au AFTER UPDATE ON daemons BEGIN
-    INSERT INTO daemons_fts(daemons_fts, rowid, label, program, mach_services, sandbox_profile)
-    VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
-    INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
-    VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
-END;
-
-CREATE TRIGGER IF NOT EXISTS atoms_ai AFTER INSERT ON atoms BEGIN
+CREATE TRIGGER atoms_ai AFTER INSERT ON atoms BEGIN
     INSERT INTO atoms_fts(rowid, entity_type, source_key, properties)
     VALUES (new.id, new.entity_type, new.source_key, new.properties);
 END;
 
-CREATE TRIGGER IF NOT EXISTS atoms_ad AFTER DELETE ON atoms BEGIN
-    INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
-    VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
+CREATE TRIGGER daemons_ad AFTER DELETE ON daemons BEGIN
+    INSERT INTO daemons_fts(daemons_fts, rowid, label, program, mach_services, sandbox_profile)
+    VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
 END;
+
+CREATE TRIGGER daemons_ai AFTER INSERT ON daemons BEGIN
+    INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
+    VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
+END;
+
+CREATE TRIGGER daemons_au AFTER UPDATE ON daemons BEGIN
+    INSERT INTO daemons_fts(daemons_fts, rowid, label, program, mach_services, sandbox_profile)
+    VALUES ('delete', old.id, old.label, old.program, old.mach_services, old.sandbox_profile);
+    INSERT INTO daemons_fts(rowid, label, program, mach_services, sandbox_profile)
+    VALUES (new.id, new.label, new.program, new.mach_services, new.sandbox_profile);
+END;
+
+CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, path, filename, file_type)
+    VALUES ('delete', old.id, old.path, old.filename, old.file_type);
+END;
+
+CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
+    INSERT INTO files_fts(rowid, path, filename, file_type)
+    VALUES (new.id, new.path, new.filename, new.file_type);
+END;
+
+CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, path, filename, file_type)
+    VALUES ('delete', old.id, old.path, old.filename, old.file_type);
+    INSERT INTO files_fts(rowid, path, filename, file_type)
+    VALUES (new.id, new.path, new.filename, new.file_type);
+END;
+
+-- ============================================================
+-- Indexes
+-- ============================================================
+CREATE INDEX idx_atoms_type ON atoms(entity_type);
+
+CREATE INDEX idx_atoms_version ON atoms(source_version_id);
+
+CREATE INDEX idx_bags_type ON bags(entity_type);
+
+CREATE INDEX idx_binaries_bundle ON binaries(bundle_id);
+
+CREATE INDEX idx_binaries_file ON binaries(file_id);
+
+CREATE INDEX idx_daemons_label ON daemons(label);
+
+CREATE INDEX idx_daemons_sandbox ON daemons(sandbox_profile);
+
+CREATE INDEX idx_ent_binary ON entitlements(binary_id);
+
+CREATE INDEX idx_ent_key ON entitlements(key);
+
+CREATE INDEX idx_ent_key_value ON entitlements(key, value);
+
+CREATE INDEX idx_files_extension ON files(extension);
+
+CREATE INDEX idx_files_path ON files(path);
+
+CREATE INDEX idx_files_size ON files(size DESC);
+
+CREATE INDEX idx_files_type ON files(file_type);
+
+CREATE INDEX idx_frameworks_name ON frameworks(name);
+
+CREATE INDEX idx_kexts_bundle ON kexts(bundle_id);
+
+CREATE INDEX idx_mach_daemon ON mach_services(daemon_id);
+
+CREATE INDEX idx_mach_service ON mach_services(service_name);
+
+CREATE INDEX idx_match_atom_a ON match_candidates(atom_a);
+
+CREATE INDEX idx_match_entity ON match_candidates(entity_type);
+
+CREATE INDEX idx_obs_entity ON observations(entity_table, entity_id);
+
+CREATE INDEX idx_obs_time ON observations(observed_at);
+
+CREATE INDEX idx_obs_type ON observations(event_type);
+
+CREATE INDEX idx_relog_bag ON resolution_event_log(bag_id);
+
+CREATE INDEX idx_rules_operation ON sandbox_rules(operation);
+
+CREATE INDEX idx_rules_profile ON sandbox_rules(profile_id);
+
+CREATE INDEX idx_sandbox_name ON sandbox_profiles(name);
