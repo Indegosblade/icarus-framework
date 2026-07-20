@@ -491,6 +491,13 @@ CREATE TRIGGER IF NOT EXISTS atoms_ad AFTER DELETE ON atoms BEGIN
     INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
     VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
 END;
+
+CREATE TRIGGER IF NOT EXISTS atoms_au AFTER UPDATE ON atoms BEGIN
+    INSERT INTO atoms_fts(atoms_fts, rowid, entity_type, source_key, properties)
+    VALUES ('delete', old.id, old.entity_type, old.source_key, old.properties);
+    INSERT INTO atoms_fts(rowid, entity_type, source_key, properties)
+    VALUES (new.id, new.entity_type, new.source_key, new.properties);
+END;
 """
 
 VIEWS = """
