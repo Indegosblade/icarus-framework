@@ -21,14 +21,14 @@ green legacy suite.
 - [x] Cross-database diffs use **natural keys**, never local row ids — both
       `structural_diff` **and** `observation_diff`, plus a stable entitlement-owner
       identity. *(#33 — **#38 merged**, integrated CI green)*
-- [ ] Provenance populated: every entity row has `source_version_id` + `observed_time`.
-      *(#40 — open)*
+- [x] Provenance populated: every entity row has `source_version_id` + `observed_time`.
+      *(#40 — **#60 merged**; pipeline back-fills after extraction)*
 - [x] `initialize_database` **refuses** a forward/newer/malformed/incomplete schema and
       no longer restamps. *(#39 — **#53 merged**, integrated CI green)*
 - [ ] Fresh-vs-migrated parity verified at `sqlite_master` (tables/indexes/triggers/
       views). *(#29/DM-06 — open)*
-- [ ] Resume only on exact fingerprint match, else fail loud; existing-output refused;
-      atomic `--fresh` (temp + replace). *(D2 decided; #45/#36 — fix pending)*
+- [x] Resume only on exact fingerprint match, else fail loud; existing-output refused;
+      atomic `--fresh` (temp + replace). *(#45/#36 — **#68 merged**, D2)*
 - [x] FK enforcement ON for every write path; verify-phase `foreign_key_check` gate.
       *(#44 — **#54 merged**, integrated CI green)*
 
@@ -48,19 +48,19 @@ green legacy suite.
       *(#42 — **#59 merged**; HMAC-SHA256 fingerprints only)*
 
 ### Interop
-- [ ] Strict `stix2.parse` accepts entity **and** diff bundles; no dangling refs / dup
-      ids; valid UTC timestamps. *(#21)*
+- [x] Strict `stix2.parse` accepts entity **and** diff bundles; no dangling refs / dup
+      ids; valid UTC timestamps. *(#21 — **#61 merged**)*
 
 ### Experimental surface
 - [ ] Resolver invariants enforced **or** the resolver is clearly excluded from the beta
       promise (documented). *(#46)*
 
 ### Honesty & governance
-- [ ] README measurable claims (test count, modules, CI matrix, schema version) match
-      reality; `schema.sql`/ARCHITECTURE regenerated to v6. *(#29)*
-- [ ] Trove classifier reflects maturity (Beta); license positioned as source-available
-      (not OSI). *(#48)*
-- [ ] `SECURITY.md` with an approved disclosure channel; CONTRIBUTING/CHANGELOG present.
+- [x] README measurable claims (test count, modules, CI matrix, schema version) match
+      reality; `schema.sql`/ARCHITECTURE regenerated to v6. *(#29 — **#64 merged**)*
+- [x] Trove classifier reflects maturity (Beta); license positioned as source-available
+      (not OSI). *(#48 — **#63 merged**)*
+- [x] `SECURITY.md` with an approved disclosure channel; CONTRIBUTING/CHANGELOG present.
       *(#48)*
 - [x] CI actions SHA-pinned + Dependabot-managed; dependency scan (`pip-audit`) runs;
       read-only token; full failure surface. *(#49 — **#52 merged**, integrated CI green)*
