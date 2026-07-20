@@ -272,7 +272,7 @@ class MacosParser(BaseParser):
                     session = ",".join(str(s) for s in session)
                 rel = self._rel_path(plist_path, source)
 
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO daemons "
                     "(label,plist_path,program,program_arguments,user_name,group_name,"
                     "run_at_load,keep_alive,sandbox_profile,mach_services,session_type) "
@@ -288,10 +288,16 @@ class MacosParser(BaseParser):
                         _text(session),
                     ),
                 )
-                row = conn.execute("SELECT id FROM daemons WHERE label=?", (label,)).fetchone()
-                if not row:
+                if cur.rowcount == 0:
+                    # `label` is UNIQUE and already belongs to a daemon we ingested
+                    # earlier (same Label reused across LaunchDaemons/LaunchAgents,
+                    # or two plists deriving the same fallback label from their
+                    # filename stem). Skip this plist entirely rather than
+                    # attaching its MachServices to the *other* daemon's id —
+                    # grafting services onto an unrelated daemon is worse than
+                    # dropping the duplicate (see issue #24).
                     continue
-                daemon_id = row[0]
+                daemon_id = cur.lastrowid
                 stats["daemons"] += 1
 
                 service_names: List[str] = []
@@ -338,7 +344,7 @@ class MacosParser(BaseParser):
                     iokit_classes.append(p["IOClass"])
                 if p.get("IOUserClientClass"):
                     has_user_client = 1
-            conn.execute(
+            cur = conn.execute(
                 "INSERT OR IGNORE INTO kexts "
                 "(bundle_id,name,version,dependencies,personalities,iokit_classes,has_user_client) "
                 "VALUES (?,?,?,?,?,?,?)",
@@ -351,7 +357,8 @@ class MacosParser(BaseParser):
                     has_user_client,
                 ),
             )
-            stats["kexts"] += 1
+            if cur.rowcount:
+                stats["kexts"] += 1
 
     # ── Phase 4: frameworks ──
 
@@ -365,13 +372,14 @@ class MacosParser(BaseParser):
                     continue
                 info = _load_plist(fw / "Info.plist") or {}
                 rel = self._rel_path(fw, source)
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO frameworks (name,path,bundle_id,version,is_private) "
                     "VALUES (?,?,?,?,?)",
                     (fw.stem, rel, _text(info.get("CFBundleIdentifier")),
                      _text(info.get("CFBundleVersion")), is_private),
                 )
-                stats["frameworks"] += 1
+                if cur.rowcount:
+                    stats["frameworks"] += 1
 
     # ── Phase 5: sandbox profiles (catalog only) ──
 
@@ -392,11 +400,12 @@ class MacosParser(BaseParser):
                 if kind != "regular":
                     continue
                 rel = self._rel_path(sb, source)
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO sandbox_profiles (name,profile_path) VALUES (?,?)",
                     (sb.stem, rel),
                 )
-                stats["sandbox_profiles"] += 1
+                if cur.rowcount:
+                    stats["sandbox_profiles"] += 1
 
     # ── Relationships: daemon -> executable binary ──
 

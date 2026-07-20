@@ -71,8 +71,8 @@ class JsonParser(BaseParser):
                             else:
                                 data = None
                             if isinstance(data, dict):
-                                keys = ", ".join(
-                                    self._safe_text(key) for key in sorted(data.keys())[:20]
+                                keys = json.dumps(
+                                    [self._safe_text(key) for key in sorted(data.keys())[:20]]
                                 )
                                 file_row = conn.execute(
                                     "SELECT id FROM files WHERE path=?", (rel,)
