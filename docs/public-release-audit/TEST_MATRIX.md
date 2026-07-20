@@ -16,7 +16,7 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 | Fresh v6 init | ✅ `test_schema_init_and_fts` | |
 | Fresh-vs-migrated parity (sqlite_master) | ❌ | no cross-check; divergence (#29/DM-06) |
 | Forward-version refusal | 🔧 (#53) | refuses future/malformed/incomplete; 5 negative-path tests (#39) |
-| Entity provenance populated | ⚠️→❌ | tests check columns exist, not that they're set (#40) |
+| Entity provenance populated | ✅ | pipeline back-fills `source_version_id`/`observed_time` (#40, merged #60) |
 | FK enforced on write paths | 🔧 (#54) | open_db on every write path + `foreign_key_check` gate; adversarial tests (#44) |
 | FTS sync on update/delete | ⚠️ | `atoms` has no update trigger (#42/SAN-09) |
 | Checkpoint resume identity | ⚠️ | `test_pipeline_checkpoint_resume` covers clear-on-success, not source-change (#45) |
@@ -43,8 +43,8 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 ## STIX
 | Contract | Coverage | Note |
 |---|---|---|
-| Valid STIX 2.1 (entity + diff) | ⚠️ regex shape tests only | strict `stix2.parse` rejects 12/14 (#21) |
-| Deterministic, non-colliding ids | ❌ | non-UUID, dangling, dup (#21) |
+| Valid STIX 2.1 (entity + diff) | ✅ | spec-valid bundles (#21, merged #61) |
+| Deterministic, non-colliding ids | ✅ | RFC-4122 `uuid5`, valid refs (#21, merged #61) |
 
 ## Sanitization
 | Contract | Coverage | Note |
