@@ -33,19 +33,19 @@ green legacy suite.
       *(#44 — **#54 merged**, integrated CI green)*
 
 ### Hostile-input safety
-- [ ] In-root symlinks are never read through to external targets, across all reader
-      families. *(#43)*
-- [ ] FIFO/special files, non-UTF-8 names, deeply-nested JSON, and compression bombs are
-      skipped-with-warning, not hang/abort/unbounded. *(#47, #25)*
+- [x] In-root symlinks are never read through to external targets, across all reader
+      families. *(#43 — **#62 merged**)*
+- [x] FIFO/special files, non-UTF-8 names, deeply-nested JSON, and compression bombs are
+      skipped-with-warning, not hang/abort/unbounded. *(#47 — **#62 merged**; residual: #25)*
 - [ ] Diff report escapes hostile values. *(#35)*
 
 ### Sanitization (confidentiality)
-- [ ] The sanitizer actually removes credentials/secrets (real HYGEIA wired **or**
-      hardened fallback). *(#41)*
-- [ ] Mandatory **post-sanitize verification gate** fails the build on any residual.
-      *(#42)*
-- [ ] The verifier never emits raw secret values; `metadata` and `*_fts` are covered.
-      *(#42)*
+- [x] The sanitizer actually removes credentials/secrets (HYGEIA canonical + fail-closed
+      + credential patterns). *(#41 — **#59 merged**)*
+- [x] Mandatory **post-sanitize verification gate** fails the build on any residual.
+      *(#42 — **#59 merged**)*
+- [x] The verifier never emits raw secret values; `metadata` and `*_fts` are covered.
+      *(#42 — **#59 merged**; HMAC-SHA256 fingerprints only)*
 
 ### Interop
 - [ ] Strict `stix2.parse` accepts entity **and** diff bundles; no dangling refs / dup

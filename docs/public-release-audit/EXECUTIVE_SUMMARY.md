@@ -37,10 +37,10 @@ cross-version diffing, an experimental entity resolver, HYGEIA sanitization, and
 - **Green gates:** 242 tests pass; ruff/mypy/bandit clean; the integrated main branch
   passed its 13-job package, security, dependency, lint, and multi-platform matrix.
 
-The audit's core message remains: **a green suite is not sufficient.** Packaging and
-cross-database identity are now fixed. The clean run still permits "sanitized" output
-that contains secrets, provenance columns that are never populated, and STIX that no
-strict parser will accept.
+The audit's core message remains: **a green suite is not sufficient.** Packaging,
+cross-database identity, and secret sanitization are now fixed. The clean run still
+permits provenance columns that are never populated and STIX that no strict parser
+will accept.
 
 ## Release verdict: **NO-GO** (today)
 
@@ -54,20 +54,20 @@ promise.
 | Issue | Blocker | Status |
 |---|---|---|
 | **#32** | Wheel/sdist omit all parser manifests/schema/catalogs → installed package broken | **Merged** (#37, `fbd2fca`) |
-| **#41** | "Sanitized" output still contains secrets: real HYGEIA never wired, fallback has no credential patterns | open (D4 decided; fix pending) |
+| **#41** | "Sanitized" output still contains secrets: real HYGEIA never wired, fallback has no credential patterns | **Merged** (#59, `7ecc7a8`; HYGEIA canonical + fail-closed + credential patterns) |
 | **#21** | STIX export is not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | open (escalated) |
 | **#45** | Resume with a changed `--source` silently yields the *wrong* database | open (D2 decided; fix pending) |
-| **#43** | Parsers dereference in-root symlinks → read files outside the source tree | open |
+| **#43** | Parsers dereference in-root symlinks → read files outside the source tree | **Merged** (#62, `31338cd`) |
 | **#40** | Provenance (`source_version_id`/`observed_time`) NULL on every entity | open |
 | **#39** | `initialize_database` silently relabels a future schema to v6 | **Merged** (#53, `1abbeb2`) |
 | **#33** | Cross-DB diff compared local autoincrement ids → false/hidden "moves" | **Merged** (#38, `39f3b11`; structural **and** observation diff) |
 
 ### High / medium (should fix for beta)
 
-Diff completeness + report escaping (#35), build-output reuse/`--fresh` (#36),
-sanitization coverage/verification gaps (#42), hostile-input hardening (#47), query
-mutability + exit codes (#34), and docs/schema drift (#29). FK enforcement (#44) and
-CI hardening (#49) are merged. Full ledger in `FINDINGS.md`.
+Diff completeness + report escaping (#35), build-output reuse/`--fresh` (#36), query
+mutability + exit codes (#34), and docs/schema drift (#29). Sanitization coverage/gaps
+(#42), hostile-input hardening (#47), FK enforcement (#44), and CI hardening (#49) are
+merged. Full ledger in `FINDINGS.md`.
 
 ## Owner decisions — now answered (see `DECISIONS_REQUIRED.md`)
 
@@ -95,10 +95,11 @@ Verdict remains **NO-GO** for public release today, but the blocker set is closi
 **Install is fixed and merged** (#37). **Output-trust** is materially improved: the
 false-diff blocker is fully fixed (structural **and** observation diff, #38), a future
 schema is now refused (#39/#53), and foreign keys are enforced on every write path
-(#44/#54) — all merged and integrated-CI verified. Still open and gating a beta: **secret
-survival in "sanitized" output** (#41, the top confidentiality blocker), **NULL entity
-provenance** (#40), **invalid STIX** (#21), **symlink read-out** (#43), and
-**resume-with-changed-source** (#45). The personal network parsers have been removed
-(#55/D8). **Do not represent ICARUS as public-ready, open-source, or Production/Stable
+(#44/#54) — all merged and integrated-CI verified. The top confidentiality blocker is
+now closed too: **secret survival in "sanitized" output is fixed** (#41 → #59, HYGEIA
+canonical + fail-closed + post-sanitize gate), along with **symlink read-out** (#43 →
+#62) and **hostile-input hardening** (#47 → #62). Still open and gating a beta: **NULL
+entity provenance** (#40), **invalid STIX** (#21), and **resume-with-changed-source**
+(#45). The personal network parsers have been removed (#55/D8). **Do not represent ICARUS as public-ready, open-source, or Production/Stable
 until the remaining blockers close; the current public visibility is a CI expedient,
 not a release.**

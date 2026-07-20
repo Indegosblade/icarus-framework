@@ -34,9 +34,9 @@
 
 | # | Abuse case | Mitigation | Residual (issue) |
 |---|---|---|---|
-| AC1 | In-root symlink points outside the tree; parser reads host files into A2/A3 | `_safe_hash` refuses symlinks for hashing only | **Open — readers still follow (#43)** |
-| AC2 | Secret in A1 ends up in A3 and is shared as "clean" | HYGEIA phase *intended* to remove it | **Open — secrets survive; verifier lies (#41/#42)** |
-| AC3 | Malformed/huge/nested input exhausts memory or hangs the run | size caps in extraction (partial) | **Open — FIFO hang, RecursionError, gzip bomb (#47, #25)** |
+| AC1 | In-root symlink points outside the tree; parser reads host files into A2/A3 | symlinks cataloged, never dereferenced or traversed | **Fixed/merged (#43 → #62)** |
+| AC2 | Secret in A1 ends up in A3 and is shared as "clean" | HYGEIA canonical + fail-closed + mandatory post-sanitize gate | **Fixed/merged (#41/#42 → #59)** |
+| AC3 | Malformed/huge/nested input exhausts memory or hangs the run | FIFO skip, surrogate-escape, depth/decompression budgets | **Fixed/merged (#47 → #62)** — residual: cloudtrail size cap (#25) |
 | AC4 | Hostile file **name/path** injects into the diff Markdown report | none | **Open (#35)** |
 | AC5 | Recipient trusts an invalid STIX bundle / dangling refs | regex shape tests only | **Open — strict parser rejects it (#21)** |
 | AC6 | Consumer acts on a false "moved"/"reassigned" diff edge | natural-key diff throughout | **Fixed/merged — structural_diff + observation_diff + stable entitlement owner (#38)** |

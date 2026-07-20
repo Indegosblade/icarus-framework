@@ -12,7 +12,9 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | ID | Issue | Title | Status |
 |---|---|---|---|
 | PKG-01 | #32 | Wheel/sdist omit all parser manifests, JSON Schema, catalogs | **MERGED** (#37, `fbd2fca`) |
-| SAN-01/02/03 | #41 | Sanitized output still contains secrets (HYGEIA never wired; fallback has no credential patterns) | open — D4 decided, fix pending (top blocker) |
+| SAN-01/02/03 | #41 | Sanitized output still contains secrets (HYGEIA never wired; fallback has no credential patterns) | **MERGED** (#59, `7ecc7a8`; HYGEIA canonical + fail-closed, credential patterns, no raw-secret retention) |
+
+**Both release blockers are now closed** (PKG-01 #37, SAN-01 #59).
 
 ## High
 
@@ -21,7 +23,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | DIFF-01 | #33 | Cross-DB diff compared local autoincrement ids → false/hidden moves | **MERGED** (#38, `39f3b11`; structural **and** observation diff) |
 | STIX-01…08 | #21 | STIX export not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | open (escalated) |
 | DM-03 | #45 | Resume with changed `--source`/`--parser` → wrong database | open — D2 decided, fix pending |
-| PARSER-01/02 | #43 | Parsers dereference in-root symlinks → read outside the source tree | open |
+| PARSER-01/02 | #43 | Parsers dereference in-root symlinks → read outside the source tree | **MERGED** (#62, `31338cd`; symlinks cataloged, never dereferenced) |
 | PROV-01 (DM-01) | #40 | Provenance NULL on every entity despite finalized versions row | open |
 | SCHEMA-01 (DM-05) | #39 | `initialize_database` silently relabels a future schema to v6 | **MERGED** (#53, `1abbeb2`) |
 | ER-01…10 | #46 | Entity-resolver invariants unsound (experimental) | open (epic) — D3: excluded from beta promise |
@@ -33,9 +35,9 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | CLI-01 | #34 | `query` is read-write + arbitrary `--sql`; no schema check; weak exit codes *(owner decision)* |
 | DIFF-02 | #35 | `full_diff` incomplete; NULL-hash blind spot; report not escaped |
 | BUILD-01 (DM-04) | #36 | Existing-output reuse/union; `--fresh` misnomer; no atomic write *(owner decision)* |
-| SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) |
+| SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) — **MERGED** (#59: mandatory post-sanitize gate, metadata/FTS tables scanned, verifier returns fingerprints not matches) |
 | DM-02 | #44 | FK enforcement OFF on all parser/pipeline write paths — **MERGED** (#54, `f1db5ac`; verify-phase `foreign_key_check` gate) |
-| PARSER-03/04/05, PHI-01/02 | #47 | Hostile-input: FIFO hang, non-UTF-8 abort, JSON RecursionError, gzip-tar decompression, invalid IPs |
+| PARSER-03/04/05, PHI-01/02 | #47 | Hostile-input: FIFO hang, non-UTF-8 abort, JSON RecursionError, gzip-tar decompression, invalid IPs — **MERGED** (#62, `31338cd`) |
 | CI-REL-01 | #49 | CI editable-only, mutable action pins, no dependency scan — **fixed/merged** (#37/#52) |
 | DOC-REL-01/03 | #29 | schema.sql (v4) / ARCHITECTURE (v5) stale; version identity incoherent |
 | DM-06 | #51 | Fresh-vs-migrated schema divergence: migrated v6 entity tables lack the `source_version_id`→`versions(id)` FK (ALTER can't add REFERENCES) |
@@ -63,8 +65,9 @@ credential (root cause = #41) — **resolved by deletion** in merged PR #55 (dec
 - **"HYGEIA cannot be installed at all / repo is private"** — REJECTED. The HYGEIA
   repo is **public**; `v3.14.0` is a real release; the git-URL dependency installs on
   a clean machine. It remains a PyPI-distribution and reproducibility concern (git
-  dep, movable tag), **not** a hard install blocker. (The real HYGEIA problem is #41:
-  ICARUS imports the wrong API, so it never actually calls HYGEIA.)
+  dep, movable tag), **not** a hard install blocker. (The real HYGEIA problem was #41:
+  ICARUS imported the wrong API and never actually called HYGEIA — **fixed in #59**,
+  which wires HYGEIA's canonical SQLite sanitizer and fails closed if it can't load.)
 - **"Binary STIX ids are non-deterministic across builds"** — partially rejected: ids
   are rowid-derived and *are* identical across two identical builds; they are simply
   not content-addressed (STIX-07, low). The blocker is that they aren't valid UUIDs at
