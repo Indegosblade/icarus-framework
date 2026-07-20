@@ -42,12 +42,15 @@ findings it surfaced — packaging, cross-database identity, secret sanitization
 provenance, and STIX validity — are now fixed and merged. The remaining beta gates are
 behavioral (read-only `query`, safe resume) rather than "the clean run hides a defect."
 
-## Release verdict: **NO-GO** (today)
+## Release verdict: **all release-blockers cleared** — owner GO/NO-GO on remaining polish
 
-Path to **CONDITIONAL GO for a public *beta*** once the blockers below are fixed or
-explicitly removed from the release promise. **Production/Stable is not warranted** —
-recommend a Beta classifier and excluding the experimental resolver from the beta
-promise.
+**Every finding in the release-blocking table below is now merged to `main`**, and all
+nine owner decisions (D1–D9) are implemented. The path to a public *beta* is no longer
+gated by a blocker; what remains is **should-fix polish**, not release-blocking:
+diff-report escaping of hostile values (#35), fresh-vs-migrated FK parity (#51), and the
+lower-severity parser-accuracy items (#22–#30). The experimental resolver stays excluded
+from the beta promise (D3). ICARUS ships as **Beta** (never Production/Stable). The final
+GO is the owner's call on whether the remaining polish is in- or out-of-scope for `4.0.0b1`.
 
 ### Release-blocking findings (must fix, accept as residual risk, or drop from scope)
 
@@ -56,7 +59,7 @@ promise.
 | **#32** | Wheel/sdist omit all parser manifests/schema/catalogs → installed package broken | **Merged** (#37, `fbd2fca`) |
 | **#41** | "Sanitized" output still contains secrets: real HYGEIA never wired, fallback has no credential patterns | **Merged** (#59, `7ecc7a8`; HYGEIA canonical + fail-closed + credential patterns) |
 | **#21** | STIX export is not spec-valid (non-UUID ids, dangling refs, invalid diff Notes/timestamps) | **Merged** (#61, `ab26f1d`) |
-| **#45** | Resume with a changed `--source` silently yields the *wrong* database | open (D2 decided; fix pending) |
+| **#45** | Resume with a changed `--source` silently yields the *wrong* database | **Merged** (#68, D2; strict resume fingerprint) |
 | **#43** | Parsers dereference in-root symlinks → read files outside the source tree | **Merged** (#62, `31338cd`) |
 | **#40** | Provenance (`source_version_id`/`observed_time`) NULL on every entity | **Merged** (#60, `d6eb08e`) |
 | **#39** | `initialize_database` silently relabels a future schema to v6 | **Merged** (#53, `1abbeb2`) |
@@ -91,17 +94,17 @@ increased"*).
 
 ## Bottom line
 
-Verdict remains **NO-GO** for public release today, but the blocker set is closing.
-**Install is fixed and merged** (#37). **Output-trust** is materially improved: the
+**The release-blocker set is now empty.** **Install is fixed and merged** (#37). **Output-trust** is materially improved: the
 false-diff blocker is fully fixed (structural **and** observation diff, #38), a future
 schema is now refused (#39/#53), and foreign keys are enforced on every write path
 (#44/#54) — all merged and integrated-CI verified. The top confidentiality blocker is
 now closed too: **secret survival in "sanitized" output is fixed** (#41 → #59, HYGEIA
 canonical + fail-closed + post-sanitize gate), along with **symlink read-out** (#43 →
 #62) and **hostile-input hardening** (#47 → #62). Entity provenance is now back-filled
-(#40 → #60) and STIX bundles are spec-valid (#21 → #61). Still open and gating a beta:
-**read-only `query`** (#34/D1, in progress), **safe resume** (#45/D2), and the
-**sanitization residual** (#42 — no `atoms_fts` re-sync on redaction). The personal
-network parsers have been removed (#55/D8). **Do not represent ICARUS as public-ready, open-source, or Production/Stable
-until the remaining blockers close; the current public visibility is a CI expedient,
+(#40 → #60) and STIX bundles are spec-valid (#21 → #61). The last three blockers are now
+closed too: **read-only `query`** (#34/D1 → #66), **safe resume** (#45/D2 → #68), and the
+**sanitization residual** (#42/SAN-09 → #67). The personal network parsers have been
+removed (#55/D8). **Represent ICARUS as Beta and source-available (never Production/Stable
+or OSI open-source); the remaining should-fix items (#35, #51) and optional hardening are
+the owner's scope call for `4.0.0b1`. The current public visibility is a CI expedient,
 not a release.**
