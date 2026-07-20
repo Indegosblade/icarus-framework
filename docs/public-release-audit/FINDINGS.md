@@ -33,7 +33,7 @@ Severity uses the skeptic-corrected value where it differs from first report.
 | ID | Issue | Title |
 |---|---|---|
 | CLI-01 | #34 | `query` is read-write + arbitrary `--sql`; no schema check; weak exit codes — **MERGED** (#66, D1; read-only by default + `query_only`, explicit `exec` for writes, clean exit codes) |
-| DIFF-02 | #35 | `full_diff` incomplete; NULL-hash blind spot; report not escaped |
+| DIFF-02 | #35 | `full_diff` incomplete; NULL-hash blind spot; report not escaped — **MERGED** (#70; full_diff covers every table + real resolution diff, NULL-hash size compare, `_md_sanitize` neutralizes hostile report values) |
 | BUILD-01 (DM-04) | #36 | Existing-output reuse/union; `--fresh` misnomer; no atomic write — **MERGED** (#68, D2; refuse-existing-by-default, atomic `--fresh` via temp + `os.replace`) |
 | SAN-04/05/07-10 | #42 | Sanitization coverage/verification gaps (metadata skipped, no post-gate, verifier echoes secret) — **MERGED** (#59 post-gate + metadata/FTS scanning + fingerprint-only verifier; #67 closes the SAN-09 residual: `atoms_au` update trigger + unconditional FTS-index rebuild after sanitize) |
 | DM-02 | #44 | FK enforcement OFF on all parser/pipeline write paths — **MERGED** (#54, `f1db5ac`; verify-phase `foreign_key_check` gate) |
@@ -46,19 +46,24 @@ Severity uses the skeptic-corrected value where it differs from first report.
 
 | ID | Issue | Title |
 |---|---|---|
-| SAN-06 | #22 | Lowercase UUIDs survive (uppercase-only regex) |
+| SAN-06 | #22 | Lowercase UUIDs survive (uppercase-only regex) — **RESOLVED/CLOSED** (already handled by #59: the ICARUS `uuid` pattern is `re.IGNORECASE`, matches both cases) |
 | DOC-REL-02/04 | #29 | README stale counts; `readelf` claim vs unused declaration |
 | POSTURE-REL-01/02 | #48 | Missing SECURITY/CONTRIBUTING/CHANGELOG; Production/Stable classifier *(owner decision)* |
 | STIX-07 | #21 | Ids keyed on rowids, not content |
 | ER-09/10 | #46 | Single-link bridge merges; no same-source guard |
 
-## Prior-session issues (still open, corroborated where noted)
+## Prior-session issues
 
-#23 linux systemd dirs · #24 macOS duplicate daemon Label · #25 cloudtrail
-`identify()` size cap (+ PHI-01 RecursionError) · #26 inflated entity counts · #27
-test harness skips relationships · #28 json_parser properties / windows PE-magic ·
-#30 hygiene (merge_bags PK = ER-02, threshold = ER-07) · #31 privacy_stack stores raw
-credential (root cause = #41) — **resolved by deletion** in merged PR #55 (decision D8).
+**MERGED (polish batch):** #23 linux systemd unit dirs (usr-merged/etc), #24 macOS
+duplicate-Label MachService misattribution, #26 inflated entity counts (rowcount-gated),
+#28 json_parser properties-as-JSON + windows `.dll` PE-magic — all **#71**. #27 test
+harness now runs the relationships phase + #30 hygiene (merge_bags shared-atom, `--threshold`
+range check, resolver test-warning noise, real Shannon entropy) — **#74**.
+
+**Still open:** #25 cloudtrail `identify()` size cap (+ PHI-01 RecursionError, low). #31
+privacy_stack stores raw credential (root cause = #41) — **resolved by deletion** in merged
+PR #55 (D8). Broader migration-completeness gap surfaced while fixing #51 — filed as **#73**
+(migrated DBs lack FTS/views/indexes/`atoms_au`; medium, not a beta blocker).
 
 ## Rejected / re-scoped leads
 
