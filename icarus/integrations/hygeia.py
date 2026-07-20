@@ -270,6 +270,45 @@ def _record_safe_audit(db_path: Path, engine: Dict[str, str], audit: Dict[str, A
         conn.close()
 
 
+_FTS_TABLES = ("files_fts", "daemons_fts", "atoms_fts")
+
+
+def _rebuild_fts_indexes(db_path: Path) -> None:
+    """Rebuild every FTS index so no secret can survive a stale FTS row.
+
+    HYGEIA's generic sanitizer redacts content-table rows via UPDATE. Older
+    ICARUS databases (schema versions built before an AFTER UPDATE trigger
+    existed for a given content table) never re-sync their FTS shadow tables
+    on UPDATE, so a redacted value can remain searchable in the FTS index
+    regardless of how thoroughly the content table itself was cleaned. This
+    runs unconditionally, after every sanitize, on every FTS table present in
+    the database — it does not depend on which triggers the database has.
+    Fails closed: any error rebuilding an index aborts sanitization.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        existing = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                "('files_fts', 'daemons_fts', 'atoms_fts')"
+            ).fetchall()
+        }
+        for fts_table in _FTS_TABLES:
+            if fts_table not in existing:
+                continue
+            quoted = _quote_ident(fts_table)
+            try:
+                conn.execute(f"INSERT INTO {quoted}({quoted}) VALUES('rebuild')")  # nosec B608 - identifier is from a fixed allowlist, double-quoted and escaped
+            except sqlite3.Error:
+                raise SanitizationError(
+                    f"Fail-closed verification could not rebuild FTS index {fts_table!r}"
+                ) from None
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def mark_sanitization_failed(db_path: Path) -> None:
     """Invalidate prior clean markers when a later mandatory gate fails."""
     conn = sqlite3.connect(str(db_path))
@@ -303,6 +342,8 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
         raise SanitizationError("HYGEIA reported a sanitization failure") from None
     if result.get("integrity_post") is not True:
         raise SanitizationError("HYGEIA did not verify database integrity after sanitization")
+
+    _rebuild_fts_indexes(db_path)
 
     after = _scan_database(db_path, registry, fingerprint_key)
     if not after["passed"]:
