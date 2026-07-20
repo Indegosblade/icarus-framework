@@ -50,9 +50,9 @@ Maps advertised contracts to test coverage. **Legend:** ✅ covered · ⚠️ sh
 | Contract | Coverage | Note |
 |---|---|---|
 | PII removed | ✅ (email/ssn/path) | but lowercase UUID (#22) |
-| Secrets removed | ❌ | no credential patterns; survive (#41) |
-| Post-sanitize verification gate | ❌ | pipeline doesn't gate (#42) |
-| All text tables covered | ❌ | `metadata`, `*_fts` skipped (#42) |
+| Secrets removed | ✅ | HYGEIA canonical + credential patterns (#41, merged #59) |
+| Post-sanitize verification gate | ✅ | mandatory re-scan fails the build on residual (#42, merged #59) |
+| All text tables covered | ✅ | `metadata` + FTS content scanned (#42, merged #59) |
 
 ## Resolver (experimental)
 | Contract | Coverage | Note |
