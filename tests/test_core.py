@@ -649,7 +649,7 @@ def _setup_resolver_db(tmp_db):
 def test_atom_immutable(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         atom_id = r.ingest_atom(1, "files", "key1", {"name": "a"})
         assert atom_id == 1
         conn = sqlite3.connect(str(tmp_db))
@@ -661,7 +661,7 @@ def test_atom_immutable(tmp_db):
 def test_atom_unique_constraint(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         r.ingest_atom(1, "files", "key1", {"name": "a"})
         with pytest.raises(sqlite3.IntegrityError):
             r.ingest_atom(1, "files", "key1", {"name": "b"})
@@ -670,7 +670,7 @@ def test_atom_unique_constraint(tmp_db):
 def test_bag_creation(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
         a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
         bag_id = r.create_bag("files", [a1, a2], canonical_key="merged")
@@ -687,7 +687,7 @@ def test_bag_creation(tmp_db):
 def test_merge_bags_logs_event(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
         a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
         a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
@@ -711,10 +711,54 @@ def test_merge_bags_logs_event(tmp_db):
         conn.close()
 
 
+def test_merge_bags_shared_atom_does_not_raise(tmp_db):
+    """#30: bag_atoms is PRIMARY KEY(bag_id, atom_id). Merging two bags that
+    both already contain the same atom used to raise IntegrityError from the
+    plain UPDATE bag_atoms SET bag_id=? — the public merge_bags API must
+    survive this without ever bypassing it."""
+    from icarus.core.resolver import EntityResolver
+    _setup_resolver_db(tmp_db)
+    with EntityResolver(str(tmp_db), experimental=True) as r:
+        a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
+        a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
+        a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
+        # a2 is deliberately placed in BOTH bags before merging.
+        b1 = r.create_bag("files", [a1, a2])
+        b2 = r.create_bag("files", [a2, a3])
+
+        surviving = r.merge_bags([b1, b2], reason="shared atom")
+        assert surviving == b1
+
+        conn = sqlite3.connect(str(tmp_db))
+        try:
+            # The shared atom collapses to a single row under the survivor;
+            # a1/a2/a3 all present, no duplicates, no IntegrityError raised.
+            rows = conn.execute(
+                "SELECT atom_id FROM bag_atoms WHERE bag_id = ? ORDER BY atom_id",
+                (surviving,),
+            ).fetchall()
+            assert [r_[0] for r_ in rows] == [a1, a2, a3]
+
+            # The losing bag's rows are fully gone.
+            assert conn.execute(
+                "SELECT COUNT(*) FROM bag_atoms WHERE bag_id = ?", (b2,)
+            ).fetchone()[0] == 0
+            assert conn.execute(
+                "SELECT COUNT(*) FROM bags WHERE id = ?", (b2,)
+            ).fetchone()[0] == 0
+
+            atom_count = conn.execute(
+                "SELECT atom_count FROM bags WHERE id = ?", (surviving,)
+            ).fetchone()[0]
+            assert atom_count == 3
+        finally:
+            conn.close()
+
+
 def test_split_bag_reversible(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
         a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
         a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
@@ -743,7 +787,7 @@ def test_split_bag_reversible(tmp_db):
 def test_event_log_append_only(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
         r.create_bag("files", [a1])
 
@@ -763,7 +807,7 @@ def test_event_log_append_only(tmp_db):
 def test_unresolved_atoms(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         a1 = r.ingest_atom(1, "files", "k1", {"x": 1})
         a2 = r.ingest_atom(1, "files", "k2", {"x": 2})
         a3 = r.ingest_atom(1, "files", "k3", {"x": 3})
@@ -780,7 +824,7 @@ def test_unresolved_atoms(tmp_db):
 def test_atoms_fts_trigger(tmp_db):
     from icarus.core.resolver import EntityResolver
     _setup_resolver_db(tmp_db)
-    with EntityResolver(str(tmp_db)) as r:
+    with EntityResolver(str(tmp_db), experimental=True) as r:
         r.ingest_atom(1, "files", "server_config", {"name": "nginx.conf", "role": "webserver"})
 
     conn = sqlite3.connect(str(tmp_db))

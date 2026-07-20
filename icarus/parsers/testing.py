@@ -30,6 +30,7 @@ class ParserTestHarness:
         self.parser = parser
         self.manifest = manifest
         self.fixtures_dir = fixtures_dir
+        self._last_relationship_stats: dict = {}
 
     def test_golden_output(self) -> HarnessResult:
         """Run parser on fixture; compare entity counts, a deterministic
@@ -102,7 +103,10 @@ class ParserTestHarness:
                         )
 
                 if "has_relationships" in golden:
-                    rel_stats = self.parser.extract_relationships(self.fixtures_dir, db_path)
+                    # _run_parser() above already ran extract_relationships once;
+                    # reuse those stats instead of re-running it (a second call
+                    # against the same DB is not guaranteed to be idempotent).
+                    rel_stats = self._last_relationship_stats
                     actual_has_rel = bool(rel_stats.get("linked", 0))
                     if actual_has_rel != golden["has_relationships"]:
                         mismatches.append(
@@ -287,4 +291,12 @@ class ParserTestHarness:
         # directory. Production builds still record and sanitize the real path.
         initialize_database(db_path, {"source": "parser-test-fixture"})
         self.parser.extract_entities(self.fixtures_dir, db_path)
+        # Relationships phase can emit its own observations/entities (e.g.
+        # event_type values only produced while linking entities together).
+        # Run it here so every gate that consumes _run_parser's DB — not just
+        # test_golden_output's optional has_relationships check — sees that
+        # output and can catch declared-vs-emitted drift from this phase.
+        self._last_relationship_stats = self.parser.extract_relationships(
+            self.fixtures_dir, db_path
+        )
         return db_path

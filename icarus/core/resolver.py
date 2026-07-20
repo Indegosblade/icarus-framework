@@ -109,9 +109,21 @@ class EntityResolver:
         self._log_event("merge", surviving_id, all_atom_ids, reason)
 
         for bag_id in bag_ids[1:]:
+            # bag_atoms has PRIMARY KEY(bag_id, atom_id): if the losing and
+            # surviving bags already share an atom, a plain
+            # "UPDATE ... SET bag_id" re-points that shared row onto a key
+            # that already exists under surviving_id and raises
+            # IntegrityError. INSERT OR IGNORE + delete-the-loser is safe
+            # either way — a shared atom simply collapses to the one row
+            # already present under surviving_id.
             self.conn.execute(
-                "UPDATE bag_atoms SET bag_id = ? WHERE bag_id = ?",
+                "INSERT OR IGNORE INTO bag_atoms (bag_id, atom_id) "
+                "SELECT ?, atom_id FROM bag_atoms WHERE bag_id = ?",
                 (surviving_id, bag_id),
+            )
+            self.conn.execute(
+                "DELETE FROM bag_atoms WHERE bag_id = ?",
+                (bag_id,),
             )
             self.conn.execute(
                 "UPDATE resolution_event_log SET bag_id = ? WHERE bag_id = ?",
