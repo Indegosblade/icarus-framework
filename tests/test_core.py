@@ -497,8 +497,10 @@ def test_full_diff_includes_structural(two_dbs):
         assert "structural" in results
 
 
-def test_resolution_change_never_produced(two_dbs):
-    """RESOLUTION_CHANGE is reserved for Phase 2 — must never appear in v1 output."""
+def test_resolution_change_is_produced_by_full_diff(two_dbs):
+    """full_diff() wires a real resolution (bag) diff — the RESOLUTION_CHANGE
+    category the module docstring advertises now appears in its output (DIFF-02,
+    #35). With no bags it must still produce no spurious resolution changes."""
     from icarus.core.differ import DiffCategory, IcarusDiffer
     from icarus.core.schema import initialize_database
 
@@ -516,8 +518,11 @@ def test_resolution_change_never_produced(two_dbs):
 
     with IcarusDiffer(str(db1), str(db2)) as d:
         results = d.full_diff()
-        for diff_result in results.values():
-            assert diff_result.category != DiffCategory.RESOLUTION_CHANGE
+
+    assert "resolution" in results
+    assert results["resolution"].category == DiffCategory.RESOLUTION_CHANGE
+    # No bags on either side -> the resolution diff is empty, not fabricated.
+    assert results["resolution"].total_changes == 0
 
 
 def test_skip_hygeia_metadata(tmp_db):

@@ -4,15 +4,21 @@ ICARUS Differ — Cross-version intelligence comparison.
 Compares two ICARUS databases and identifies what changed between versions:
 added entities, removed entities, modified entities, and relationship changes.
 
-Five diff categories:
+Five diff categories, every one of which ``full_diff()`` produces:
   ADDITION        — entity exists in new, not in old
   DELETION        — entity exists in old, not in new
-  PROPERTY_CHANGE — same entity, different attribute value
+  PROPERTY_CHANGE — same entity, different attribute value (files: sha256, or
+                    size when either side's hash is NULL)
   STRUCTURAL      — relationship topology changed (edges, not nodes)
-  RESOLUTION_CHANGE — entity resolution changes (Phase 2)
+  RESOLUTION_CHANGE — entity-resolution (bag) outcomes changed between versions
+
+All comparisons key on stable NATURAL identifiers; local AUTOINCREMENT ids
+(file_id, binary_id, bag_id, atom ids, …) are never compared across databases —
+they are assigned per-build and carry no cross-version meaning.
 """
 
 import enum
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +27,36 @@ from typing import Any, Dict, List, Optional
 from icarus.core import validate_column, validate_table
 
 DIFF_DISPLAY_LIMIT = 50
+
+# C0/C1 control characters: 0x00-0x1F (incl. NUL, tab, LF, CR), DEL (0x7F), and
+# the C1 range 0x80-0x9F. This deliberately covers the ESC (0x1B) that begins
+# ANSI/terminal escape sequences.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _md_sanitize(value: Any) -> str:
+    """Neutralize a source-derived value before it is placed into Markdown.
+
+    ICARUS diffs untrusted export trees: a file path, entitlement key, or
+    structural description can carry backticks, pipes, newlines, or terminal
+    control/ANSI escapes chosen to break out of a code span or table cell, inject
+    Markdown, or emit terminal control codes when the report is viewed. This
+    renders any value inert while keeping legitimate readable paths readable.
+
+    Order matters: escape backslashes FIRST so the single backslashes introduced
+    by the later escapes (``\\|`` and ``\\xNN``) are not themselves doubled.
+    Backticks are replaced (not backslash-escaped) because backslash escaping
+    does not work inside a Markdown code span — a raw backtick would still close
+    the span — so the character itself must never survive.
+    """
+    text = "?" if value is None else str(value)
+    text = text.replace("\\", "\\\\")          # 1. escape literal backslashes
+    text = text.replace("`", "\\x60")          # 2. defuse code-span-closing backticks
+    text = text.replace("|", "\\|")            # 3. escape table-cell pipes
+    text = _CONTROL_RE.sub(                     # 4. defuse control/ANSI/newline bytes
+        lambda m: f"\\x{ord(m.group()):02x}", text
+    )
+    return text
 
 
 class DiffCategory(enum.Enum):
@@ -52,22 +88,22 @@ class DiffResult:
         if self.added:
             lines.append(f"### Added ({len(self.added)})")
             for item in self.added[:DIFF_DISPLAY_LIMIT]:
-                lines.append(f"- `{item.get(self.key_column, '?')}`")
+                lines.append(f"- `{_md_sanitize(item.get(self.key_column, '?'))}`")
 
         if self.removed:
             lines.append(f"\n### Removed ({len(self.removed)})")
             for item in self.removed[:DIFF_DISPLAY_LIMIT]:
-                lines.append(f"- `{item.get(self.key_column, '?')}`")
+                lines.append(f"- `{_md_sanitize(item.get(self.key_column, '?'))}`")
 
         if self.changed:
             lines.append(f"\n### Changed ({len(self.changed)})")
             for item in self.changed[:DIFF_DISPLAY_LIMIT]:
-                lines.append(f"- `{item.get(self.key_column, '?')}`")
+                lines.append(f"- `{_md_sanitize(item.get(self.key_column, '?'))}`")
 
         if self.structural:
             lines.append(f"\n### Structural ({len(self.structural)})")
             for item in self.structural[:DIFF_DISPLAY_LIMIT]:
-                lines.append(f"- {item.get('description', '?')}")
+                lines.append(f"- {_md_sanitize(item.get('description', '?'))}")
 
         return "\n".join(lines)
 
@@ -459,17 +495,220 @@ class IcarusDiffer:
             "observed_at": observed_at,
         }
 
+    def _natural_diff(
+        self,
+        table: str,
+        key_column: str,
+        key_cols: List[str],
+        new_sql: str,
+        old_sql: str,
+    ) -> DiffResult:
+        """Set-difference two natural-key projections into added/removed.
+
+        ``new_sql``/``old_sql`` each SELECT the SAME natural-key columns from
+        ``main``/``old_db`` respectively. Identity is the tuple of ``key_cols``
+        values, so only the projected natural key ever participates — a local
+        AUTOINCREMENT id can never leak into the comparison (DIFF-01 discipline).
+        """
+        new_rows = [dict(r) for r in self.conn.execute(new_sql)]  # nosec B608 - SQL is a fixed literal built in-method; no external input interpolated
+        old_rows = [dict(r) for r in self.conn.execute(old_sql)]  # nosec B608 - SQL is a fixed literal built in-method; no external input interpolated
+
+        def key(d: Dict[str, Any]) -> tuple:
+            return tuple(d[c] for c in key_cols)
+
+        old_keys = {key(d) for d in old_rows}
+        new_keys = {key(d) for d in new_rows}
+        return DiffResult(
+            added=[d for d in new_rows if key(d) not in old_keys],
+            removed=[d for d in old_rows if key(d) not in new_keys],
+            changed=[],
+            table=table,
+            key_column=key_column,
+        )
+
+    def files_changed_diff(self) -> DiffResult:
+        """Files present in both versions whose content changed.
+
+        Keyed on ``sha256`` when both sides have a hash. Files >= 50 MB and
+        symlinks are stored with ``sha256 = NULL`` (hashing is skipped), so a
+        raw ``sha256 IS NOT sha256`` test can never see a content change in
+        them — both NULLs compare equal. When either side's hash is NULL we
+        fall back to comparing ``size``, so a large-file or symlink content
+        change that alters the byte size is still reported. Genuinely unchanged
+        NULL-hash files (same size) are NOT reported, avoiding false positives.
+        """
+        rows = self.conn.execute("""
+            SELECT n.path,
+                   o.sha256 AS old_sha256, n.sha256 AS new_sha256,
+                   o.size   AS old_size,   n.size   AS new_size
+            FROM main.files n
+            JOIN old_db.files o ON n.path = o.path
+            WHERE (n.sha256 IS NOT NULL AND o.sha256 IS NOT NULL
+                   AND n.sha256 IS NOT o.sha256)
+               OR ((n.sha256 IS NULL OR o.sha256 IS NULL)
+                   AND n.size IS NOT o.size)
+        """).fetchall()
+
+        changed = []
+        for r in rows:
+            d = dict(r)
+            if d["old_sha256"] is not None and d["new_sha256"] is not None:
+                d["change_basis"] = "sha256"
+            else:
+                # At least one side's content is unknown (>=50 MB or symlink);
+                # the reported change is inferred from the size delta.
+                d["change_basis"] = "size"
+                d["content_unknown"] = True
+            changed.append(d)
+
+        return DiffResult(
+            added=[], removed=[], changed=changed,
+            table="files", key_column="path",
+            category=DiffCategory.PROPERTY_CHANGE,
+        )
+
+    def binaries_diff(self) -> DiffResult:
+        """Binaries added/removed, keyed on the owning file's path.
+
+        A binary has no unique column of its own (executable_name is not
+        unique); its stable natural identity is its file's path via the
+        mandatory ``file_id`` foreign key (files.path is UNIQUE).
+        """
+        return self._natural_diff(
+            "binaries", "path", ["path"],
+            "SELECT f.path, b.bundle_id, b.executable_name "
+            "FROM main.binaries b JOIN main.files f ON f.id = b.file_id",
+            "SELECT f.path, b.bundle_id, b.executable_name "
+            "FROM old_db.binaries b JOIN old_db.files f ON f.id = b.file_id",
+        )
+
+    def entitlements_diff(self) -> DiffResult:
+        """Entitlements added/removed, keyed on (owning bundle_id, key, value).
+
+        Mirrors ``entitlement_diff``'s natural key: the owning binary's
+        ``bundle_id`` plus the entitlement's ``key``/``value`` — never the
+        per-database autoincrement entitlement id or binary id.
+        """
+        return self._natural_diff(
+            "entitlements", "key", ["bundle_id", "key", "value"],
+            "SELECT b.bundle_id, e.key, e.value "
+            "FROM main.entitlements e JOIN main.binaries b ON b.id = e.binary_id",
+            "SELECT b.bundle_id, e.key, e.value "
+            "FROM old_db.entitlements e JOIN old_db.binaries b ON b.id = e.binary_id",
+        )
+
+    def sandbox_rules_diff(self) -> DiffResult:
+        """Sandbox rules added/removed, keyed on the owning profile + rule shape.
+
+        Natural key = owning profile name (via profile_id) plus the rule's
+        (operation, action, filter_type, filter_value) — never profile_id.
+        """
+        return self._natural_diff(
+            "sandbox_rules", "operation",
+            ["profile", "operation", "action", "filter_type", "filter_value"],
+            "SELECT p.name AS profile, r.operation, r.action, "
+            "       r.filter_type, r.filter_value "
+            "FROM main.sandbox_rules r "
+            "JOIN main.sandbox_profiles p ON p.id = r.profile_id",
+            "SELECT p.name AS profile, r.operation, r.action, "
+            "       r.filter_type, r.filter_value "
+            "FROM old_db.sandbox_rules r "
+            "JOIN old_db.sandbox_profiles p ON p.id = r.profile_id",
+        )
+
+    def mach_services_diff(self) -> DiffResult:
+        """Mach services added/removed, keyed on (owning daemon label, service_name).
+
+        Natural key = the owning daemon's ``label`` (via daemon_id, which is a
+        local autoincrement id) plus ``service_name``.
+        """
+        return self._natural_diff(
+            "mach_services", "service_name", ["daemon", "service_name"],
+            "SELECT d.label AS daemon, m.service_name "
+            "FROM main.mach_services m JOIN main.daemons d ON d.id = m.daemon_id",
+            "SELECT d.label AS daemon, m.service_name "
+            "FROM old_db.mach_services m JOIN old_db.daemons d ON d.id = m.daemon_id",
+        )
+
+    def resolution_diff(self) -> DiffResult:
+        """Diff entity-resolution outcomes (bags) between versions.
+
+        A bag is a resolved cluster of atoms identified by its
+        ``canonical_key``. Bags are compared on the NATURAL
+        (``entity_type``, ``canonical_key``); the autoincrement bag id and the
+        atom ids listed in the event log are never compared (they carry no
+        cross-database meaning). Bags with no ``canonical_key`` (not yet
+        resolved) have no stable cross-version identity and are excluded.
+
+        Reports resolved entities added/removed, and — for bags present in both
+        versions — a change when the clustered ``atom_count`` or ``score``
+        differs (the resolution regrouped or re-scored the same entity).
+        """
+        def load(schema: str) -> Dict[tuple, Dict[str, Any]]:
+            return {
+                (r["entity_type"], r["canonical_key"]): dict(r)
+                for r in self.conn.execute(
+                    f"SELECT entity_type, canonical_key, atom_count, score "  # nosec B608 - schema is a fixed literal ('main'/'old_db')
+                    f"FROM {schema}.bags WHERE canonical_key IS NOT NULL"
+                )
+            }
+
+        new_bags = load("main")
+        old_bags = load("old_db")
+
+        added = [v for k, v in new_bags.items() if k not in old_bags]
+        removed = [v for k, v in old_bags.items() if k not in new_bags]
+        changed = []
+        for k in new_bags.keys() & old_bags.keys():
+            n, o = new_bags[k], old_bags[k]
+            if n["atom_count"] != o["atom_count"] or n["score"] != o["score"]:
+                changed.append({
+                    "entity_type": k[0],
+                    "canonical_key": k[1],
+                    "old_atom_count": o["atom_count"],
+                    "new_atom_count": n["atom_count"],
+                    "old_score": o["score"],
+                    "new_score": n["score"],
+                })
+
+        return DiffResult(
+            added=added, removed=removed, changed=changed,
+            table="bags", key_column="canonical_key",
+            category=DiffCategory.RESOLUTION_CHANGE,
+        )
+
     def full_diff(self) -> Dict[str, DiffResult]:
-        """Run diff across all major tables, including structural analysis."""
+        """Run diff across all major tables, including structural, observation,
+        and resolution analysis. Produces every category the module docstring
+        advertises: ADDITION/DELETION (per-table added/removed), PROPERTY_CHANGE
+        (files_changed, incl. NULL-hash size compare), STRUCTURAL, and
+        RESOLUTION_CHANGE."""
         results = {}
+        # Files (add/remove/changed — sha256, with size fallback for NULL hashes).
         results["files_added"] = self.added_entities("files", "path")
         results["files_removed"] = self.removed_entities("files", "path")
-        results["files_changed"] = self.changed_entities("files", "path", "sha256")
+        results["files_changed"] = self.files_changed_diff()
+        # Daemons.
         results["daemons_added"] = self.added_entities("daemons", "label")
         results["daemons_removed"] = self.removed_entities("daemons", "label")
+        # Kexts.
         results["kexts_added"] = self.added_entities("kexts", "bundle_id")
         results["kexts_removed"] = self.removed_entities("kexts", "bundle_id")
+        # Frameworks (path is UNIQUE — direct natural-key helper).
+        results["frameworks_added"] = self.added_entities("frameworks", "path")
+        results["frameworks_removed"] = self.removed_entities("frameworks", "path")
+        # Sandbox profiles (name is UNIQUE — direct natural-key helper).
+        results["sandbox_profiles_added"] = self.added_entities("sandbox_profiles", "name")
+        results["sandbox_profiles_removed"] = self.removed_entities("sandbox_profiles", "name")
+        # Tables whose natural key spans a join (no single UNIQUE own column).
+        results["binaries"] = self.binaries_diff()
+        results["entitlements"] = self.entitlements_diff()
+        results["sandbox_rules"] = self.sandbox_rules_diff()
+        results["mach_services"] = self.mach_services_diff()
+        # Cross-table / relationship, observation, and resolution analysis.
         results["structural"] = self.structural_diff()
+        results["observations"] = self.observation_diff()
+        results["resolution"] = self.resolution_diff()
         return results
 
     def generate_report(self) -> str:
