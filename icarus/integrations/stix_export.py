@@ -1,17 +1,18 @@
 """ICARUS STIX 2.1 Export — transform ICARUS entities to STIX 2.1 bundles."""
 
-import hashlib
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
+_ICARUS_STIX_NAMESPACE = uuid.UUID("28ad9e40-63a7-4de4-a1f0-20f7f1f3cd10")
+
 
 def _stix_id(prefix: str, seed: str) -> str:
-    """Generate a deterministic STIX ID from a prefix and seed string."""
-    h = hashlib.sha256(seed.encode()).hexdigest()[:32]
-    return f"{prefix}--{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+    """Generate a deterministic RFC 4122 STIX identifier."""
+    return f"{prefix}--{uuid.uuid5(_ICARUS_STIX_NAMESPACE, f'{prefix}:{seed}')}"
 
 
 def _stix_timestamp(observed: Optional[str] = None) -> str:
@@ -23,12 +24,18 @@ def _stix_timestamp(observed: Optional[str] = None) -> str:
     timestamp is available (observed_time is nullable and often unset).
     """
     if observed:
-        ts = observed.strip().replace(" ", "T", 1)
-        if ts.endswith("+00:00"):
-            ts = ts[: -len("+00:00")]
-        if not ts.endswith("Z"):
-            ts += "Z"
-        return ts
+        raw = observed.strip().replace(" ", "T", 1)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError as exc:
+            raise ValueError(f"Invalid timestamp for STIX export: {observed!r}") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+        timespec = "microseconds" if parsed.microsecond else "seconds"
+        return parsed.isoformat(timespec=timespec).replace("+00:00", "Z")
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
@@ -36,16 +43,37 @@ def _make_bundle(objects: List[dict]) -> dict:
     return {
         "type": "bundle",
         "id": _stix_id("bundle", json.dumps(objects, sort_keys=True)),
-        "spec_version": "2.1",
         "objects": objects,
     }
+
+
+_ENTITY_TABLE_STIX_TYPE = {
+    "files": "file",
+    "binaries": "file",
+    "daemons": "infrastructure",
+    "entitlements": "course-of-action",
+}
+
+_SCO_ENTITY_TABLES = {"files", "binaries"}
+
+
+def _entity_ref(entity_table: str, entity_id: int) -> str:
+    """Return the canonical STIX id shared by a mapper and its references."""
+    try:
+        stix_type = _ENTITY_TABLE_STIX_TYPE[entity_table]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported observation entity table for STIX export: {entity_table!r}"
+        ) from exc
+    seed = json.dumps([entity_table, entity_id], separators=(",", ":"))
+    return _stix_id(stix_type, seed)
 
 
 def _file_to_sco(row: dict) -> dict:
     """Map a files table row to a STIX file SCO."""
     obj = {
         "type": "file",
-        "id": _stix_id("file", row["path"]),
+        "id": _entity_ref("files", row["id"]),
         "spec_version": "2.1",
         "name": row.get("filename", ""),
     }
@@ -62,7 +90,7 @@ def _binary_to_sco(row: dict) -> dict:
     """Map a binaries table row to a STIX file SCO with extension."""
     obj = {
         "type": "file",
-        "id": _stix_id("file", f"binary-{row['id']}"),
+        "id": _entity_ref("binaries", row["id"]),
         "spec_version": "2.1",
         "name": row.get("executable_name", ""),
     }
@@ -81,7 +109,7 @@ def _daemon_to_sdo(row: dict) -> dict:
     ts = _stix_timestamp(row.get("observed_time"))
     return {
         "type": "infrastructure",
-        "id": _stix_id("infrastructure", row["label"]),
+        "id": _entity_ref("daemons", row["id"]),
         "spec_version": "2.1",
         "created": ts,
         "modified": ts,
@@ -97,7 +125,7 @@ def _entitlement_to_sdo(row: dict) -> dict:
     ts = _stix_timestamp(row.get("observed_time"))
     return {
         "type": "course-of-action",
-        "id": _stix_id("course-of-action", f"{row['key']}-{row['value']}"),
+        "id": _entity_ref("entitlements", row["id"]),
         "spec_version": "2.1",
         "created": ts,
         "modified": ts,
@@ -106,47 +134,93 @@ def _entitlement_to_sdo(row: dict) -> dict:
     }
 
 
-# STIX SCO/SDO type emitted for each entity_table an observation can
-# reference, matching what that table's own mapper produces (_file_to_sco,
-# _binary_to_sco, _daemon_to_sdo, _entitlement_to_sdo). Tables with no
-# dedicated mapper fall back to a generic custom SCO type so object_refs
-# always contains a validly-shaped STIX identifier.
-_ENTITY_TABLE_STIX_TYPE = {
-    "files": "file",
-    "binaries": "file",
-    "daemons": "infrastructure",
-    "entitlements": "course-of-action",
-}
-
-
-def _entity_ref(entity_table: str, entity_id: int) -> str:
-    """Build the STIX identifier of the entity an observation refers to."""
-    sco_type = _ENTITY_TABLE_STIX_TYPE.get(
-        entity_table, f"x-icarus-{entity_table.replace('_', '-')}"
-    )
-    return _stix_id(sco_type, f"{entity_table}-{entity_id}")
-
-
 def _observation_to_sdo(row: dict) -> dict:
-    """Map an observations row to a STIX observed-data SDO."""
+    """Map an observation to observed-data (SCO) or a Sighting (SDO)."""
     ts = _stix_timestamp(row.get("observed_at"))
-    return {
-        "type": "observed-data",
-        "id": _stix_id(
-            "observed-data",
-            f"{row['entity_table']}-{row['entity_id']}-{row['observed_at']}",
-        ),
+    seed = json.dumps(
+        [
+            row.get("id"),
+            row["entity_table"],
+            row["entity_id"],
+            row["observed_at"],
+            row.get("event_type", ""),
+        ],
+        separators=(",", ":"),
+    )
+    entity_ref = _entity_ref(row["entity_table"], row["entity_id"])
+    common = {
         "spec_version": "2.1",
         "created": ts,
         "modified": ts,
-        "first_observed": row["observed_at"],
-        "last_observed": row["observed_at"],
-        "number_observed": 1,
-        "object_refs": [_entity_ref(row["entity_table"], row["entity_id"])],
         "x_icarus_entity_table": row["entity_table"],
         "x_icarus_entity_id": row["entity_id"],
         "x_icarus_event_type": row.get("event_type", ""),
     }
+    if row["entity_table"] in _SCO_ENTITY_TABLES:
+        return {
+            "type": "observed-data",
+            "id": _stix_id("observed-data", seed),
+            **common,
+            "first_observed": ts,
+            "last_observed": ts,
+            "number_observed": 1,
+            "object_refs": [entity_ref],
+        }
+    return {
+        "type": "sighting",
+        "id": _stix_id("sighting", seed),
+        **common,
+        "first_seen": ts,
+        "last_seen": ts,
+        "count": 1,
+        "sighting_of_ref": entity_ref,
+    }
+
+
+_ENTITY_QUERIES = {
+    "files": "SELECT * FROM files WHERE id = ?",
+    "binaries": "SELECT * FROM binaries WHERE id = ?",
+    "daemons": "SELECT * FROM daemons WHERE id = ?",
+    "entitlements": "SELECT * FROM entitlements WHERE id = ?",
+}
+
+_ENTITY_MAPPERS = {
+    "files": _file_to_sco,
+    "binaries": _binary_to_sco,
+    "daemons": _daemon_to_sdo,
+    "entitlements": _entitlement_to_sdo,
+}
+
+
+def _load_observation_target(
+    conn: sqlite3.Connection, entity_table: str, entity_id: int
+) -> dict:
+    """Load and map an observation target, refusing a dangling reference."""
+    try:
+        query = _ENTITY_QUERIES[entity_table]
+        mapper = _ENTITY_MAPPERS[entity_table]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unsupported observation entity table for STIX export: {entity_table!r}"
+        ) from exc
+    row = conn.execute(query, (entity_id,)).fetchone()
+    if row is None:
+        raise ValueError(
+            "Observation target does not exist: "
+            f"{entity_table}[{entity_id}]"
+        )
+    return mapper(dict(row))
+
+
+def _append_unique(objects: List[dict], objects_by_id: dict, obj: dict) -> None:
+    """Append once, rejecting two different objects which claim one STIX id."""
+    existing = objects_by_id.get(obj["id"])
+    if existing is not None:
+        if existing != obj:
+            raise ValueError(f"Conflicting STIX objects share id {obj['id']}")
+        return
+    objects_by_id[obj["id"]] = obj
+    objects.append(obj)
 
 
 def export_to_stix(
@@ -158,6 +232,7 @@ def export_to_stix(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     objects = []
+    objects_by_id = {}
 
     try:
         tables = include_tables or [
@@ -166,33 +241,48 @@ def export_to_stix(
 
         if "files" in tables:
             for row in conn.execute("SELECT * FROM files").fetchall():
-                objects.append(_file_to_sco(dict(row)))
+                _append_unique(objects, objects_by_id, _file_to_sco(dict(row)))
 
         if "binaries" in tables:
             try:
                 for row in conn.execute("SELECT * FROM binaries").fetchall():
-                    objects.append(_binary_to_sco(dict(row)))
+                    _append_unique(objects, objects_by_id, _binary_to_sco(dict(row)))
             except sqlite3.OperationalError:
                 pass
 
         if "daemons" in tables:
             try:
                 for row in conn.execute("SELECT * FROM daemons").fetchall():
-                    objects.append(_daemon_to_sdo(dict(row)))
+                    _append_unique(objects, objects_by_id, _daemon_to_sdo(dict(row)))
             except sqlite3.OperationalError:
                 pass
 
         if "entitlements" in tables:
             try:
                 for row in conn.execute("SELECT * FROM entitlements").fetchall():
-                    objects.append(_entitlement_to_sdo(dict(row)))
+                    _append_unique(objects, objects_by_id, _entitlement_to_sdo(dict(row)))
             except sqlite3.OperationalError:
                 pass
 
         if "observations" in tables:
             try:
                 for row in conn.execute("SELECT * FROM observations").fetchall():
-                    objects.append(_observation_to_sdo(dict(row)))
+                    observation = dict(row)
+                    target_ref = _entity_ref(
+                        observation["entity_table"], observation["entity_id"]
+                    )
+                    if target_ref not in objects_by_id:
+                        target = _load_observation_target(
+                            conn,
+                            observation["entity_table"],
+                            observation["entity_id"],
+                        )
+                        _append_unique(objects, objects_by_id, target)
+                    _append_unique(
+                        objects,
+                        objects_by_id,
+                        _observation_to_sdo(observation),
+                    )
             except sqlite3.OperationalError:
                 pass
     finally:
@@ -203,13 +293,45 @@ def export_to_stix(
     return bundle
 
 
+_ICARUS_SOFTWARE_ID = _stix_id("software", "icarus-framework")
+
+
+def _diff_note(
+    category: str,
+    table: str,
+    seed_parts: list,
+    content: str,
+    timestamp: str,
+) -> dict:
+    """Create a complete STIX Note for one ICARUS diff result."""
+    seed = json.dumps([category, table, *seed_parts], separators=(",", ":"))
+    return {
+        "type": "note",
+        "id": _stix_id("note", seed),
+        "spec_version": "2.1",
+        "created": timestamp,
+        "modified": timestamp,
+        "content": content,
+        "object_refs": [_ICARUS_SOFTWARE_ID],
+        "x_icarus_diff_category": category,
+        "x_icarus_diff_table": table,
+    }
+
+
 def diff_to_stix(
     old_db: Path, new_db: Path, output_path: Path
 ) -> dict:
     """Export a diff result as a STIX 2.1 bundle."""
     from icarus.core.differ import IcarusDiffer
 
-    objects = []
+    timestamp = _stix_timestamp()
+    objects = [{
+        "type": "software",
+        "id": _ICARUS_SOFTWARE_ID,
+        "spec_version": "2.1",
+        "name": "ICARUS Framework",
+    }]
+    objects_by_id = {_ICARUS_SOFTWARE_ID: objects[0]}
     with IcarusDiffer(str(old_db), str(new_db)) as d:
         results = d.full_diff()
 
@@ -218,55 +340,65 @@ def diff_to_stix(
 
             for item in diff_result.added:
                 item_key = item.get(key_column, "?")
-                objects.append({
-                    "type": "note",
-                    "id": _stix_id("note", f"added-{key}-{item_key}"),
-                    "spec_version": "2.1",
-                    "content": f"Added in {key}: {item_key}",
-                    "x_icarus_diff_category": "addition",
-                    "x_icarus_diff_table": key,
-                })
+                _append_unique(
+                    objects,
+                    objects_by_id,
+                    _diff_note(
+                        "addition",
+                        key,
+                        [item_key],
+                        f"Added in {key}: {item_key}",
+                        timestamp,
+                    ),
+                )
 
             for item in diff_result.removed:
                 item_key = item.get(key_column, "?")
-                objects.append({
-                    "type": "note",
-                    "id": _stix_id("note", f"removed-{key}-{item_key}"),
-                    "spec_version": "2.1",
-                    "content": f"Removed from {key}: {item_key}",
-                    "x_icarus_diff_category": "deletion",
-                    "x_icarus_diff_table": key,
-                })
+                _append_unique(
+                    objects,
+                    objects_by_id,
+                    _diff_note(
+                        "deletion",
+                        key,
+                        [item_key],
+                        f"Removed from {key}: {item_key}",
+                        timestamp,
+                    ),
+                )
 
             for item in diff_result.changed:
                 item_key = item.get(key_column, "?")
-                objects.append({
-                    "type": "note",
-                    "id": _stix_id("note", f"changed-{key}-{item_key}"),
-                    "spec_version": "2.1",
-                    "content": (
-                        f"Changed in {key}: {item_key} "
-                        f"({item.get('old_value', '?')} -> {item.get('new_value', '?')})"
+                old_value = item.get("old_value", "?")
+                new_value = item.get("new_value", "?")
+                _append_unique(
+                    objects,
+                    objects_by_id,
+                    _diff_note(
+                        "property_change",
+                        key,
+                        [item_key, old_value, new_value],
+                        f"Changed in {key}: {item_key} ({old_value} -> {new_value})",
+                        timestamp,
                     ),
-                    "x_icarus_diff_category": "property_change",
-                    "x_icarus_diff_table": key,
-                })
+                )
 
             for item in diff_result.structural:
                 item_key = item.get(key_column, "?")
-                objects.append({
-                    "type": "note",
-                    "id": _stix_id(
-                        "note",
-                        f"structural-{key}-{item.get('type', '')}-{item_key}",
+                change_type = item.get("type", "")
+                content = item.get(
+                    "description", f"Structural change in {key}: {item_key}"
+                )
+                _append_unique(
+                    objects,
+                    objects_by_id,
+                    _diff_note(
+                        "structural",
+                        key,
+                        [change_type, item_key, content],
+                        content,
+                        timestamp,
                     ),
-                    "spec_version": "2.1",
-                    "content": item.get(
-                        "description", f"Structural change in {key}: {item_key}"
-                    ),
-                    "x_icarus_diff_category": "structural",
-                    "x_icarus_diff_table": key,
-                })
+                )
 
     bundle = _make_bundle(objects)
     output_path.write_text(json.dumps(bundle, indent=2) + "\n")

@@ -17,7 +17,7 @@ Structured data sources contain implicit relationships that are invisible at the
 |    +----v----+    +----v----+    +----v----+    +----v----+        |
 |    | PARSER  |    | SCHEMA  |    |  QUERY  |    |RESOLVER |        |
 |    |Registry |    | Manager |    | Engine  |    | Entity  |        |
-|    |11 total |    |         |    |         |    | Resolve |        |
+|    |9 total  |    |         |    |         |    | Resolve |        |
 |    +----+----+    +----+----+    +----+----+    +----+----+        |
 |         |              |              |              |              |
 |         +------- ------+---------- ---+--------------+             |
@@ -123,9 +123,10 @@ ICARUS entities map to STIX 2.1 objects:
 - `binaries` -> File SCO with extensions
 - `daemons` -> Infrastructure SDO
 - `entitlements` -> Course of Action SDO
-- `observations` -> Observed Data SDO
+- `observations` -> Observed Data SDO for SCO targets; Sighting SRO for SDO targets
 
-Diffs export as STIX Note objects with addition/deletion classification.
+Diffs export as STIX Note objects with addition, deletion, property-change,
+and structural classifications.
 
 ---
 

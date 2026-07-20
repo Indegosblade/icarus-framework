@@ -181,14 +181,12 @@ Every candidate pair considered — not just the ones that merge — is persiste
 
 ## Parsers
 
-11 parsers — 8 production, 3 candidate. Auto-detection runs each parser's `identify()` method against the source; the most specific match (lowest specificity number) wins.
+9 parsers — 8 production, 1 candidate. Auto-detection runs each parser's `identify()` method against the source; the most specific match (lowest specificity number) wins.
 
 | Parser | Tier | Spec | Description |
 |--------|------|:----:|-------------|
 | `cloud/aws/cloudtrail` | production | 5 | AWS CloudTrail JSON audit logs — IAM identities, API events, error patterns |
 | `macos` | candidate | 8 | macOS / iOS root filesystem — launchd daemons, Mach services, entitlements, kexts, frameworks |
-| `network/privacy_stack` | candidate | 10 | Home network privacy stack (Pi-hole, WireGuard, Mullvad, dashboard) |
-| `network/deploy_scripts` | candidate | 15 | Paramiko deploy/fix scripts for remote server management |
 | `windows` | production | 20 | Windows directories — PE/DLL binaries, services, frameworks, file metadata |
 | `linux` | production | 20 | Linux rootfs — ELF binaries, systemd units, shared libraries, capabilities |
 | `generic/json` | production | 100 | JSON file catalog with top-level key extraction |
@@ -246,7 +244,7 @@ See [wiki/Schema-Reference](wiki/Schema-Reference.md) for full column definition
 
 **PII sanitization** — [HYGEIA](https://github.com/Indegosblade/HYGEIA) runs as a pipeline phase. PII is stripped before the database is marked complete, not as a separate post-processing step.
 
-**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects, each carrying the spec-required `created`/`modified` timestamps; observed-data SDOs carry valid `object_refs`. Diffs map to STIX Note objects across all four diff categories (addition, deletion, change, structural). Deterministic IDs make bundles diffable.
+**STIX 2.1 export** — entities map to STIX Cyber Observable Objects and Domain Objects. File/binary observations become Observed Data over SCO references; daemon/entitlement observations become Sighting relationships to their SDOs. Every reference resolves within the bundle, timestamps are normalized to UTC, and RFC 4122 UUIDv5 identifiers remain deterministic. Diffs map to complete STIX Note objects across all four diff categories (addition, deletion, change, structural).
 
 See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and extension points.
 
@@ -260,7 +258,7 @@ See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and exte
 pytest tests/ -x -q
 ```
 
-208 tests across 16 modules covering schema, queries, diffing, pipeline, entity resolution (the atomizer, similarity scoring/blocking, scored resolution, and CLI/pipeline wiring), observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, network parsers, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
+208 tests across 16 modules covering schema, queries, diffing, pipeline, entity resolution (the atomizer, similarity scoring/blocking, scored resolution, and CLI/pipeline wiring), observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
 
 CI runs the full test matrix on every push:
 
@@ -349,7 +347,6 @@ icarus-framework/
 │   │   ├── macos.py              macOS/iOS parser (launchd daemons, Mach services)
 │   │   ├── macho.py              Self-contained Mach-O reader (arch, entitlements)
 │   │   ├── cloud/                Cloud parsers (aws/cloudtrail)
-│   │   ├── network/              Network stack parsers (privacy_stack, deploy_scripts)
 │   │   ├── generic/              Fallback parsers (json, xml, sqlite, archive, binary)
 │   │   ├── catalog/              Two-tier parser catalog
 │   │   └── schema/               Manifest JSON Schema

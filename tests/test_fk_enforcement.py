@@ -15,8 +15,6 @@ PARSER_CASES = (
     ("icarus.parsers.windows", "WindowsParser"),
     ("icarus.parsers.linux", "LinuxParser"),
     ("icarus.parsers.macos", "MacosParser"),
-    ("icarus.parsers.network.privacy_stack", "PrivacyStackParser"),
-    ("icarus.parsers.network.deploy_scripts", "DeployScriptsParser"),
     ("icarus.parsers.generic.archive_parser", "ArchiveParser"),
     ("icarus.parsers.generic.xml_parser", "XmlParser"),
     ("icarus.parsers.generic.sqlite_parser", "SqliteParser"),

@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from icarus.core.schema import open_db
+from icarus.core.schema import ENTITY_TABLES, open_db
+
+PROVENANCE_ENTITY_TABLES = (*ENTITY_TABLES, "mach_services")
 
 
 class PipelinePhase:
@@ -229,6 +231,49 @@ class Pipeline:
                 raise
 
         self._finalize_version_record()
+
+        # Finalization writes completion metadata after the sanitize phase. A
+        # second, read-only gate ensures no post-sanitize write can invalidate
+        # the share-safe claim. If it fails, mark sanitize failed so resume
+        # re-runs sanitization instead of skipping every completed phase.
+        sanitize_indices = [
+            index for index, phase in enumerate(self.phases) if phase.name == "sanitize"
+        ]
+        if sanitize_indices:
+            from icarus.integrations.hygeia import (
+                SanitizationError,
+                mark_sanitization_failed,
+                verify_clean,
+            )
+
+            sanitize_index = sanitize_indices[-1]
+            try:
+                final_gate = verify_clean(self.output)
+            except Exception:
+                error = SanitizationError(
+                    "Final post-write sanitization gate could not complete"
+                )
+                mark_sanitization_failed(self.output)
+                self.save_checkpoint(sanitize_index, "failed", {"error": str(error)})
+                self.context.errors.append(("sanitize_final_gate", str(error)))
+                raise error from None
+
+            if not final_gate["passed"]:
+                residual_types = ", ".join(final_gate["patterns_found"].keys())
+                error = SanitizationError(
+                    "Final post-write sanitization gate found "
+                    f"{final_gate['total_findings']} residual finding(s) of type(s): "
+                    f"{residual_types}"
+                )
+                mark_sanitization_failed(self.output)
+                self.save_checkpoint(sanitize_index, "failed", {"error": str(error)})
+                self.context.errors.append(("sanitize_final_gate", str(error)))
+                raise error
+
+            self.context.stats["sanitize_final_gate"] = {
+                "passed": True,
+                "total_findings": 0,
+            }
         self._clear_checkpoint()
 
         total = time.time() - self.context.start_time
@@ -256,7 +301,7 @@ def create_default_pipeline(
             ``icarus resolve`` CLI command instead.
     """
     from icarus.core.schema import initialize_database
-    from icarus.integrations.hygeia import sanitize_output
+    from icarus.integrations.hygeia import require_hygeia, sanitize_output
     from icarus.parsers import get_parser
 
     pipeline = Pipeline(source, output, parser_name, skip_hygeia=skip_hygeia)
@@ -264,12 +309,20 @@ def create_default_pipeline(
 
     pipeline.add_phase("init", lambda ctx: initialize_database(ctx.output_db),
                        "Initialize SQLite database and schema")
-    pipeline.add_phase("ingest", lambda ctx: parser.extract_entities(ctx.source, ctx.output_db),
-                       "Walk source and extract entities")
+    pipeline.add_phase(
+        "ingest",
+        lambda ctx: _run_parser_phase_with_provenance(
+            ctx, lambda: parser.extract_entities(ctx.source, ctx.output_db)
+        ),
+        "Walk source, extract entities, and stamp run provenance",
+    )
     pipeline.add_phase(
         "relationships",
-        lambda ctx: parser.extract_relationships(ctx.source, ctx.output_db),
-        "Map relationships between entities")
+        lambda ctx: _run_parser_phase_with_provenance(
+            ctx, lambda: parser.extract_relationships(ctx.source, ctx.output_db)
+        ),
+        "Map relationships and stamp run provenance",
+    )
     pipeline.add_phase("verify", lambda ctx: _verify_phase(ctx, parser),
                        "Quality gates and verification")
 
@@ -287,10 +340,90 @@ def create_default_pipeline(
         pipeline.add_phase("skip_hygeia_marker", _mark_hygeia_skipped,
                            "Record HYGEIA skip in metadata")
     else:
+        engine = require_hygeia()
+        pipeline.context.stats["sanitizer"] = engine
+        print(
+            f"[ICARUS] Sanitizer: {engine['engine']} "
+            f"v{engine['version']} ({engine['mode']})"
+        )
         pipeline.add_phase("sanitize", lambda ctx: sanitize_output(ctx.output_db),
-                           "HYGEIA sanitization pass")
+                           "HYGEIA canonical sanitizer + mandatory post-gate")
 
     return pipeline
+
+
+def _capture_provenance_watermarks(db_path: Path) -> dict:
+    """Capture the highest row id present before a parser phase starts."""
+    conn = open_db(db_path)
+    try:
+        # Identifiers come exclusively from the fixed schema-owned tuple.
+        return {
+            table: conn.execute(
+                f"SELECT COALESCE(MAX(id), 0) FROM {table}"  # nosec B608
+            ).fetchone()[0]
+            for table in (*PROVENANCE_ENTITY_TABLES, "observations")
+        }
+    finally:
+        conn.close()
+
+
+def _stamp_new_provenance(ctx, watermarks: dict) -> dict:
+    """Attribute only rows inserted after the supplied phase watermarks.
+
+    This deliberately does not backfill every NULL row: doing so would claim
+    legacy/output-reuse rows as products of the current source. Rows committed
+    before a parser crash are stamped from the caller's ``finally`` block, so a
+    resumed phase cannot strand partial output without provenance.
+    """
+    if ctx.version_id is None:
+        raise RuntimeError("Cannot stamp parser output without an active versions row")
+
+    conn = open_db(ctx.output_db)
+    stamped = {}
+    try:
+        version = conn.execute(
+            "SELECT started_at FROM versions WHERE id = ?", (ctx.version_id,)
+        ).fetchone()
+        if version is None:
+            raise RuntimeError("Cannot stamp parser output: active versions row is missing")
+        observed_time = version[0]
+
+        for table in PROVENANCE_ENTITY_TABLES:
+            # The identifier comes exclusively from the fixed schema-owned tuple.
+            cursor = conn.execute(
+                f"UPDATE {table} "  # nosec B608
+                "SET source_version_id = ?, "
+                "observed_time = COALESCE(observed_time, ?) "
+                "WHERE id > ?",
+                (ctx.version_id, observed_time, watermarks[table]),
+            )
+            stamped[table] = max(cursor.rowcount, 0)
+
+        observation_cursor = conn.execute(
+            "UPDATE observations SET version_id = COALESCE(version_id, ?) WHERE id > ?",
+            (ctx.version_id, watermarks["observations"]),
+        )
+        stamped["observations"] = max(observation_cursor.rowcount, 0)
+        conn.commit()
+    finally:
+        conn.close()
+    return stamped
+
+
+def _run_parser_phase_with_provenance(ctx, handler: Callable) -> dict:
+    """Run one parser phase and stamp even rows committed before a failure."""
+    watermarks = _capture_provenance_watermarks(ctx.output_db)
+    try:
+        result = handler()
+    finally:
+        stamped = _stamp_new_provenance(ctx, watermarks)
+
+    stats = dict(result or {})
+    stats["provenance"] = {
+        "rows_stamped": stamped,
+        "total": sum(stamped.values()),
+    }
+    return stats
 
 
 def _verify_phase(ctx, parser) -> dict:

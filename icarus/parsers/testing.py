@@ -281,6 +281,10 @@ class ParserTestHarness:
         f = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
         db_path = Path(f.name)
         f.close()
-        initialize_database(db_path, {"source": str(self.fixtures_dir)})
+        # A host-absolute fixture path (for example /Users/runner/...) is
+        # itself source-identifying PII. Keep harness metadata neutral so the
+        # zero-PII gate measures parser output instead of the CI runner's home
+        # directory. Production builds still record and sanitize the real path.
+        initialize_database(db_path, {"source": "parser-test-fixture"})
         self.parser.extract_entities(self.fixtures_dir, db_path)
         return db_path
