@@ -73,6 +73,88 @@ _ICARUS_PATTERN_EXTENSIONS = {
 }
 
 
+# Column scoping (issue #76).
+#
+# ICARUS databases are overwhelmingly a *filesystem catalog*: paths, filenames,
+# versions, bundle ids, arches, and enums. HYGEIA's generic value-content
+# patterns (email/ip_v4/swift_bic/uuid/phone/url/...) were designed to find
+# secrets inside free-text *values*; applied to structural path/name columns
+# they are dominated by false positives — library version strings match
+# `ip_v4` (`6.6.87.2`), uppercase filename fragments match `swift_bic`
+# (`RTKVHD64.SYS`), systemd `foo@.service` units match `email`, and GUID
+# filenames match `uuid`. On a real rootfs that is thousands of false matches:
+# the fail-closed post-gate aborts the build, and any redaction that *did* land
+# would corrupt the catalog (`/lib/modules/6.6.87.2-.../` -> `[REDACTED_IP_V4]`).
+#
+# So value-content patterns apply ONLY to genuinely free-text/value columns;
+# structural columns get only path-shaped and label-anchored-secret patterns,
+# which cannot false-match a version number, filename, or GUID.
+
+# Patterns safe to apply to structural (path/name) columns: path-specific, or
+# label-anchored key/value secret patterns that require an explicit `key = ...`
+# context and therefore never match a bare filename/version/identifier.
+_PATH_SAFE_PATTERN_NAMES = frozenset({
+    "username_path",
+    "username_path_win",
+    "password_kv",
+    "aws_secret_key_kv",
+    "private_key_kv",
+    "token_kv",
+    "bearer_token",
+})
+
+# Known core tables. A table not in this set is an extension/unknown table and
+# is scanned with the FULL pattern set (see `_patterns_for_column`) so extension
+# free-text is never silently under-scanned (#42) — only the known, high-volume
+# structural columns of the core schema are exempted from value-content patterns.
+_KNOWN_TABLES = frozenset({
+    "metadata", "files", "binaries", "daemons", "entitlements",
+    "sandbox_profiles", "sandbox_rules", "kexts", "frameworks", "versions",
+    "observations", "atoms", "bags", "bag_atoms", "resolution_event_log",
+    "match_candidates", "mach_services",
+})
+
+# Free-text / JSON payload columns of the core schema where real secrets or PII
+# can live and where the full pattern set (including HYGEIA's value-content
+# patterns) must apply. Every OTHER column of a known table is structural.
+_VALUE_COLUMNS = frozenset({
+    ("observations", "properties"),
+    ("atoms", "properties"),
+    ("match_candidates", "features"),
+    ("versions", "metadata"),
+    ("entitlements", "value"),
+    ("metadata", "value"),
+    ("resolution_event_log", "reason"),
+    ("sandbox_profiles", "raw_sbpl"),
+})
+
+
+# FTS virtual tables mirror content columns of their source table and must be
+# scoped identically (else a structural path re-flagged via its FTS mirror would
+# reintroduce the #76 false positives).
+_FTS_SOURCE = {"files_fts": "files", "daemons_fts": "daemons", "atoms_fts": "atoms"}
+
+
+def _patterns_for_column(table: str, column: str, regex_patterns: Dict[str, Any]) -> Dict[str, Any]:
+    """Scope patterns to a column.
+
+    Value columns and any column of an unknown/extension table get the full
+    pattern set. Only the known, structural columns of the core schema — paths,
+    filenames, versions, ids, enums — are limited to path-safe patterns, so
+    value-content patterns (email/ip_v4/swift_bic/uuid/...) can never
+    false-match a version number, filename, or GUID (#76). FTS mirror tables
+    inherit their source table's scope.
+    """
+    table = _FTS_SOURCE.get(table, table)
+    if table not in _KNOWN_TABLES or (table, column) in _VALUE_COLUMNS:
+        return regex_patterns
+    return {
+        name: pattern
+        for name, pattern in regex_patterns.items()
+        if name in _PATH_SAFE_PATTERN_NAMES
+    }
+
+
 class HygeiaUnavailableError(RuntimeError):
     """Raised when the mandatory HYGEIA dependency cannot be loaded."""
 
@@ -132,6 +214,90 @@ def _build_registry():
         active_categories=set(default.active_categories),
         pattern_descriptions=descriptions,
     )
+
+
+def _path_safe_registry(full_registry):
+    """Derive a registry carrying only the structural-column-safe patterns.
+
+    HYGEIA's generic engine applies every registry pattern to every non-safe
+    text column and cannot be told to scope by column (`SAFE_COLUMNS` is
+    hardcoded). Handing it only the path-safe patterns lets it run as the
+    canonical engine — redacting usernames and label-anchored secrets, plus its
+    secure_delete VACUUM — without ever touching a version number or filename.
+    """
+    return PatternRegistry(
+        regex_patterns={
+            name: pattern
+            for name, pattern in full_registry.regex_patterns.items()
+            if name in _PATH_SAFE_PATTERN_NAMES
+        },
+        context_patterns={},
+        sensitive_columns=set(),
+        sensitive_json_keys=set(),
+        pii_tables=set(),
+        active_categories=set(full_registry.active_categories),
+        pattern_descriptions=dict(full_registry.pattern_descriptions),
+    )
+
+
+def _redact_scoped(db_path: Path, registry) -> int:
+    """Deterministically redact every column with its column-scoped patterns.
+
+    This is ICARUS's ontology-aware redaction pass. It applies the full pattern
+    set to free-text/value columns and only path-safe patterns to structural
+    columns (see `_patterns_for_column`), so version numbers, filenames, and
+    GUIDs are never corrupted. Unlike HYGEIA's generic engine it handles each
+    row independently — a per-row failure never abandons the rest of a column's
+    batch (HYGEIA#39) — and a redaction skipped here is caught by the
+    fail-closed post-gate. False positives are suppressed with the same HYGEIA
+    oracle the verifier uses, so redaction and verification always agree.
+    """
+    redacted = 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("PRAGMA secure_delete = ON")
+        for table, columns in _get_text_columns(conn).items():
+            # FTS virtual tables are rebuilt from the redacted source by
+            # _rebuild_fts_indexes; never UPDATE them directly.
+            if table in _FTS_SOURCE:
+                continue
+            for column in columns:
+                patterns = _patterns_for_column(table, column, registry.regex_patterns)
+                if not patterns:
+                    continue
+                location = f"{db_path.name}.{table}.{column}"
+                rows = conn.execute(
+                    f"SELECT rowid, {_quote_ident(column)} FROM {_quote_ident(table)} "  # nosec B608 - identifiers are double-quoted and escaped
+                    f"WHERE {_quote_ident(column)} IS NOT NULL"
+                ).fetchall()
+                for rowid, value in rows:
+                    if not isinstance(value, str) or not value:
+                        continue
+                    new_value = value
+                    for name, pattern in patterns.items():
+                        def _replace(match, _name=name):
+                            text = match.group(0)
+                            if _hygeia_is_false_positive(location, _name, text):
+                                return text
+                            return f"[REDACTED_{_name.upper()}]"
+
+                        new_value = pattern.sub(_replace, new_value)
+                    if new_value != value:
+                        try:
+                            conn.execute(
+                                f"UPDATE {_quote_ident(table)} SET {_quote_ident(column)} = ? "  # nosec B608 - identifiers are double-quoted and escaped
+                                f"WHERE rowid = ?",
+                                (new_value, rowid),
+                            )
+                            redacted += 1
+                        except sqlite3.Error:
+                            # Do not abandon the batch (contrast HYGEIA#39); the
+                            # unredacted row is caught by the post-gate below.
+                            continue
+        conn.commit()
+    finally:
+        conn.close()
+    return redacted
 
 
 def _quote_ident(name: str) -> str:
@@ -199,13 +365,17 @@ def _scan_database(db_path: Path, registry, fingerprint_key: bytes) -> Dict[str,
                     f"Fail-closed verification could not scan table {table!r}"
                 ) from None
 
+            scoped = [
+                (column, _patterns_for_column(table, column, registry.regex_patterns))
+                for column in columns
+            ]
             for row in cursor:
                 checked_rows += 1
-                for index, column in enumerate(columns):
+                for index, (column, patterns) in enumerate(scoped):
                     value = row[index + 1]
                     if not isinstance(value, str) or not value:
                         continue
-                    for pattern_name, pattern in registry.regex_patterns.items():
+                    for pattern_name, pattern in patterns.items():
                         for match in pattern.finditer(value):
                             match_text = match.group(0)
                             location = f"{db_path.name}.{table}.{column}"
@@ -333,8 +503,16 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
     fingerprint_key = secrets.token_bytes(32)
     before = _scan_database(db_path, registry, fingerprint_key)
 
+    # ICARUS ontology-aware redaction (issue #76): the full pattern set on
+    # free-text/value columns, only path-safe patterns on structural columns,
+    # deterministic per-row so no batch is abandoned (HYGEIA#39).
+    redacted = _redact_scoped(db_path, registry)
+
+    # HYGEIA canonical engine, scoped to the path-safe patterns so it can never
+    # corrupt a structural column; it also runs the secure_delete VACUUM that
+    # purges pre-redaction values from freed pages.
     try:
-        result = sanitize_database_generic(db_path, registry=registry)
+        result = sanitize_database_generic(db_path, registry=_path_safe_registry(registry))
     except Exception:
         raise SanitizationError("HYGEIA raised an error while sanitizing the database") from None
 
@@ -357,7 +535,7 @@ def sanitize_output(db_path: Path) -> Dict[str, Any]:
     return {
         "engine": engine,
         "checked_rows": before["checked_rows"],
-        "redacted": int(result.get("rows_redacted", 0)),
+        "redacted": redacted + int(result.get("rows_redacted", 0)),
         "patterns_found": before["patterns_found"],
         "findings": before["findings"],
         "total_findings": before["total_findings"],
