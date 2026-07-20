@@ -12,6 +12,8 @@ import plistlib
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Tuple
 
+from icarus.parsers.base import BaseParser
+
 # Thin Mach-O magics -> (byte order, word size). Keyed on the first 4 bytes.
 _MH_MAGICS: Dict[bytes, Tuple[Literal["little", "big"], int]] = {
     b"\xcf\xfa\xed\xfe": ("little", 64),  # MH_MAGIC_64, little-endian
@@ -159,7 +161,7 @@ def macho_info(path: Path) -> Optional[Dict[str, Any]]:
     prefers the arm64/arm64e slice.
     """
     try:
-        with open(path, "rb") as f:
+        with BaseParser._open_regular(path) as f:
             head = f.read(4)
             if len(head) < 4:
                 return None

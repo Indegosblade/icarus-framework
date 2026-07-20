@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import warnings
 from pathlib import Path
 from typing import Any, Dict
 
@@ -32,14 +33,38 @@ class CloudTrailParser(BaseParser):
                     continue
                 path = Path(dirpath) / fname
                 try:
-                    data = json.loads(path.read_text(errors="replace"))
+                    st, kind = self._file_kind(path)
+                    if (
+                        st is None
+                        or kind != "regular"
+                        or not 0 < st.st_size <= _MAX_JSON_BYTES
+                    ):
+                        continue
+                    with self._open_regular(path) as handle:
+                        raw = handle.read(_MAX_JSON_BYTES + 1)
+                    if len(raw) > _MAX_JSON_BYTES:
+                        continue
+                    data = json.loads(raw.decode(errors="replace"))
                     if isinstance(data, dict) and "Records" in data:
                         records = data["Records"]
                         if (isinstance(records, list) and len(records) > 0
+                                and isinstance(records[0], dict)
                                 and "eventVersion" in records[0]
                                 and "eventSource" in records[0]):
                             return True
-                except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+                except (
+                    json.JSONDecodeError,
+                    UnicodeDecodeError,
+                    OSError,
+                ):
+                    continue
+                except (RecursionError, MemoryError):
+                    warnings.warn(
+                        "Skipping CloudTrail JSON that exceeds parser depth/memory limits: "
+                        f"{self._safe_text(str(path))}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                     continue
         return False
 
@@ -56,17 +81,30 @@ class CloudTrailParser(BaseParser):
                     if not fname.lower().endswith(".json"):
                         continue
                     path = Path(dirpath) / fname
-                    try:
-                        st = path.stat()
-                    except OSError:
+                    st, kind = self._file_kind(path)
+                    if st is None or kind != "regular":
                         continue
                     if not 0 < st.st_size <= _MAX_JSON_BYTES:
                         continue
                     try:
-                        data = json.loads(
-                            path.read_text(errors="replace")
+                        with self._open_regular(path) as handle:
+                            raw = handle.read(_MAX_JSON_BYTES + 1)
+                        if len(raw) > _MAX_JSON_BYTES:
+                            continue
+                        data = json.loads(raw.decode(errors="replace"))
+                    except (
+                        json.JSONDecodeError,
+                        UnicodeDecodeError,
+                        OSError,
+                    ):
+                        continue
+                    except (RecursionError, MemoryError):
+                        warnings.warn(
+                            "Skipping CloudTrail JSON that exceeds parser depth/memory limits: "
+                            f"{self._safe_text(str(path))}",
+                            RuntimeWarning,
+                            stacklevel=2,
                         )
-                    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
                         continue
 
                     records = data.get("Records") if isinstance(data, dict) else None
@@ -78,7 +116,7 @@ class CloudTrailParser(BaseParser):
                         "INSERT OR IGNORE INTO files "
                         "(path,filename,extension,size,sha256,"
                         "file_type) VALUES (?,?,?,?,?,?)",
-                        (rel, path.name, ".json", st.st_size,
+                        (rel, self._safe_text(path.name), ".json", st.st_size,
                          self._safe_hash(path, st.st_size),
                          "cloudtrail_log"),
                     )
@@ -87,7 +125,13 @@ class CloudTrailParser(BaseParser):
                     for record in records:
                         try:
                             self._ingest_record(conn, record, rel, stats)
-                        except (sqlite3.Error, TypeError, ValueError):
+                        except (
+                            sqlite3.Error,
+                            TypeError,
+                            ValueError,
+                            RecursionError,
+                            MemoryError,
+                        ):
                             # One malformed record must not abort the build.
                             continue
             conn.commit()

@@ -7,10 +7,14 @@ from one specific data source type.
 """
 
 import hashlib
+import os
 import sqlite3
+import stat
+import warnings
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, BinaryIO, Dict, Iterator, List, Optional
 
 from icarus.core.schema import open_db
 
@@ -110,7 +114,106 @@ class BaseParser(ABC):
     @staticmethod
     def _rel_path(path: Path, source: Path) -> str:
         """Normalized relative path for database storage."""
-        return "/" + str(path.relative_to(source)).replace("\\", "/")
+        relative = str(path.relative_to(source)).replace("\\", "/")
+        return "/" + BaseParser._safe_text(relative)
+
+    @staticmethod
+    def _safe_text(value: str) -> str:
+        """Return UTF-8-bindable text, escaping filesystem surrogate bytes."""
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+
+    @staticmethod
+    def _file_kind(path: Path):
+        """Return ``(lstat, kind)`` without following links.
+
+        Readable results are ``regular``, ``symlink``, or ``special``;
+        ``unreadable`` is a fail-closed result.
+        Callers may catalog final-component symlinks from their own inode
+        metadata, but must only open ``regular`` paths.
+        """
+        try:
+            st = path.lstat()
+        except (OSError, PermissionError):
+            return None, "unreadable"
+        if stat.S_ISLNK(st.st_mode):
+            return st, "symlink"
+        if stat.S_ISREG(st.st_mode):
+            return st, "regular"
+        warnings.warn(
+            f"Skipping non-regular input: {BaseParser._safe_text(str(path))}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return st, "special"
+
+    @staticmethod
+    def _path_has_symlink(path: Path, root: Optional[Path] = None) -> bool:
+        """True when a component below ``root`` is a symlink.
+
+        Host-managed ancestors outside the source tree are intentionally ignored:
+        macOS runners, for example, may place temporary directories beneath a
+        symlinked system component.  Treating those as hostile would reject every
+        otherwise-regular input.  Callers that walk a source tree already rely on
+        ``os.walk(..., followlinks=False)``; direct-directory parsers pass their
+        source root here to enforce the same boundary.
+        """
+        absolute = Path(os.path.abspath(os.fspath(path)))
+        if root is None:
+            start = Path(absolute.anchor)
+            parts = absolute.parts[1:]
+        else:
+            start = Path(os.path.abspath(os.fspath(root)))
+            try:
+                parts = absolute.relative_to(start).parts
+            except ValueError:
+                return True
+        current = start
+        for part in parts:
+            current /= part
+            try:
+                if stat.S_ISLNK(current.lstat().st_mode):
+                    return True
+            except (OSError, PermissionError):
+                return True
+        return False
+
+    @staticmethod
+    def _symlink_target(path: Path) -> Optional[str]:
+        """Read link metadata only; never dereference the target."""
+        try:
+            return BaseParser._safe_text(os.readlink(path))
+        except (OSError, PermissionError):
+            return None
+
+    @staticmethod
+    @contextmanager
+    def _open_regular(path: Path) -> Iterator[BinaryIO]:
+        """Open one regular file without following a final symlink on POSIX.
+
+        ``O_NONBLOCK`` prevents a raced-in FIFO from hanging, ``O_NOFOLLOW``
+        rejects a raced-in final symlink where the platform supports it, and
+        ``fstat`` verifies the opened object rather than trusting only the
+        earlier path metadata check.
+        """
+        _, kind = BaseParser._file_kind(path)
+        if kind != "regular":
+            raise OSError("input is not a regular file")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("opened input is not a regular file")
+            with os.fdopen(fd, "rb") as handle:
+                fd = -1
+                yield handle
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
     @staticmethod
     def _safe_hash(path: Path, size: int) -> Optional[str]:
@@ -122,9 +225,11 @@ class BaseParser(ABC):
         if size >= MAX_HASH_FILE_SIZE:
             return None
         try:
-            if path.is_symlink():
-                return None
-            return hashlib.sha256(path.read_bytes()).hexdigest()
+            digest = hashlib.sha256()
+            with BaseParser._open_regular(path) as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
         except (PermissionError, OSError):
             return None
 
@@ -132,7 +237,7 @@ class BaseParser(ABC):
     def _check_magic(path: Path, magic: bytes) -> bool:
         """Check if file starts with the given magic bytes."""
         try:
-            with open(path, "rb") as f:
+            with BaseParser._open_regular(path) as f:
                 return f.read(len(magic)) == magic
         except (PermissionError, OSError):
             return False

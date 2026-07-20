@@ -36,13 +36,21 @@ class XmlParser(BaseParser):
                         continue
                     path = Path(dirpath) / fname
                     try:
-                        st = path.stat()
+                        st, kind = self._file_kind(path)
+                        if st is None or kind in ("special", "unreadable"):
+                            continue
                         rel = self._rel_path(path, source)
+                        is_link = kind == "symlink"
                         conn.execute(
                             "INSERT OR IGNORE INTO files "
-                            "(path,filename,extension,size,sha256,file_type) VALUES (?,?,?,?,?,?)",
-                            (rel, path.name, ".xml", st.st_size,
-                             self._safe_hash(path, st.st_size), "xml"),
+                            "(path,filename,extension,size,sha256,file_type,"
+                            "is_symlink,symlink_target) VALUES (?,?,?,?,?,?,?,?)",
+                            (
+                                rel, self._safe_text(path.name), ".xml", st.st_size,
+                                self._safe_hash(path, st.st_size),
+                                "symlink" if is_link else "xml",
+                                int(is_link), self._symlink_target(path),
+                            ),
                         )
                         stats["files"] += 1
                     except (PermissionError, OSError):
