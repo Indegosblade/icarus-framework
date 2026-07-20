@@ -232,6 +232,10 @@ def test_noop_sanitizer_is_caught_by_mandatory_post_gate(secret_db, monkeypatch)
     def noop(_path, registry):
         return {"rows_redacted": 0, "integrity_post": True}
 
+    # Bypass BOTH redaction paths — ICARUS's scoped redactor and the HYGEIA
+    # engine — so that nothing is redacted and the independent post-sanitize
+    # gate is what must fail closed on the residual secrets.
+    monkeypatch.setattr(hygeia_mod, "_redact_scoped", lambda _path, _registry: 0)
     monkeypatch.setattr(hygeia_mod, "sanitize_database_generic", noop)
 
     with pytest.raises(hygeia_mod.SanitizationError) as caught:
@@ -303,6 +307,79 @@ def test_unknown_table_is_scanned_instead_of_silently_ignored(tmp_path):
     conn.close()
     assert SYNTHETIC_SECRETS["password"] not in value
     assert any(finding["table"] == "extension_data" for finding in stats["findings"])
+
+
+def test_structural_columns_survive_value_pattern_false_positives(tmp_path):
+    """#76: value-content patterns must not fire on structural path columns.
+
+    Real filesystem paths whose text happens to match email/ip_v4/swift_bic/uuid
+    must be preserved verbatim (not corrupted, not treated as residual secrets
+    that abort the fail-closed build), while genuine usernames in the same
+    column are still redacted.
+    """
+    db_path = tmp_path / "fp.db"
+    initialize_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+    survivors = [
+        "/lib/modules/6.6.87.2-microsoft-standard-WSL2/kernel/x.ko",  # ip_v4 shape
+        "/share/doc/git/RelNotes/1.5.0.1.txt",                        # ip_v4 shape
+        "/lib/wsl/drivers/foo/RTKVHD64.sys",                          # swift_bic shape
+        "/lib/systemd/system/user@0.service",                        # email shape
+        "/Windows/System32/07409496-a423-4a3e-b620-2cfb01a9318d.dll",  # uuid shape
+    ]
+    redact_me = ["/home/alice/notes.txt", "/home/über/u.txt", "/Users/bob/x"]
+    for p in survivors + redact_me:
+        conn.execute(
+            "INSERT INTO files (path, filename, file_type) VALUES (?, ?, ?)",
+            (p, p.rsplit("/", 1)[-1], "other"),
+        )
+    # A value column must still get the full pattern set.
+    conn.execute(
+        "INSERT INTO observations (entity_table, entity_id, observed_at, event_type, properties) "
+        "VALUES ('files', 1, '2026-01-01T00:00:00Z', 'note', ?)",
+        ('{"src_ip": "203.0.113.9", "contact": "ops@corp.example"}',),
+    )
+    conn.commit()
+    conn.close()
+
+    # Must NOT abort — this is the real-world failure the fix addresses.
+    hygeia_mod.sanitize_output(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    paths = [r[0] for r in conn.execute("SELECT path FROM files")]
+    props = conn.execute("SELECT properties FROM observations").fetchone()[0]
+    status = conn.execute(
+        "SELECT value FROM metadata WHERE key = 'hygeia_status'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert status == "verified"
+    for p in survivors:
+        assert p in paths, f"structural path corrupted or dropped: {p}"
+    assert not any(p in paths for p in redact_me), "username path not redacted"
+    assert all(p.startswith("[REDACTED_USERNAME_PATH]") for p in paths if "REDACTED" in p)
+    # value column still sanitized
+    assert "203.0.113.9" not in props and "ops@corp.example" not in props
+    assert "REDACTED_IP_V4" in props and "REDACTED_EMAIL" in props
+
+
+def test_unknown_table_gets_full_value_patterns(tmp_path):
+    """#76/#42: extension tables are not in the structural exemption — an IP in
+    an unknown table's free-text column is still redacted (full pattern set)."""
+    db_path = tmp_path / "ext.db"
+    initialize_database(db_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE ext_notes (id INTEGER PRIMARY KEY, body TEXT)")
+    conn.execute("INSERT INTO ext_notes (body) VALUES (?)", ("callback to 203.0.113.9 now",))
+    conn.commit()
+    conn.close()
+
+    hygeia_mod.sanitize_output(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    body = conn.execute("SELECT body FROM ext_notes").fetchone()[0]
+    conn.close()
+    assert "203.0.113.9" not in body and "REDACTED_IP_V4" in body
 
 
 def test_quote_ident_escapes_embedded_double_quotes():
