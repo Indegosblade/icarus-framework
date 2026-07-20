@@ -53,6 +53,10 @@ class ParserRegistry:
             raise ValueError(f"Unknown parser: '{name}'. Available: {available}")
         return self._parsers[name]()
 
+    def get_manifest(self, name: str) -> Optional[ParserManifest]:
+        """Return the registered manifest for a parser, or None if it has none."""
+        return self._manifests.get(name)
+
     def list_all(self) -> List[dict]:
         """Return metadata dicts for all registered parsers."""
         results = []
