@@ -65,15 +65,32 @@ class IcarusQuery:
     Supports raw SQL, full-text search, and pre-built intelligence queries.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, writable: bool = False):
         self.db_path = Path(db_path)
         if not self.db_path.exists():
             raise FileNotFoundError(f"Database not found: {db_path}")
+        self.writable = writable
         # open_db() enables foreign_keys enforcement and scales cache/mmap
         # pragmas to available RAM on this long-lived working connection
         # (see icarus.core.schema.open_db).
-        self.conn = open_db(self.db_path)
+        if writable:
+            # Explicit mutation path (``icarus exec``): read-write handle.
+            self.conn = open_db(self.db_path)
+        else:
+            # Default query path is READ-ONLY. ``mode=ro`` (not immutable, so
+            # the WAL is still honoured for freshly-built databases) blocks
+            # writes to the MAIN database file. ``PRAGMA query_only = ON`` is
+            # additionally required because ``mode=ro`` protects only the main
+            # file — it does NOT stop writes to a database brought in with
+            # ``ATTACH``. query_only rejects every write statement on the
+            # connection, ATTACHed databases included.
+            self.conn = open_db(self.db_path, readonly=True)
+            self.conn.execute("PRAGMA query_only = ON")
         self.conn.row_factory = sqlite3.Row
+
+    def commit(self) -> None:
+        """Commit pending changes (only meaningful on a writable connection)."""
+        self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()) -> QueryResult:
         """Execute raw SQL and return structured result."""

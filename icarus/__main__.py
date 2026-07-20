@@ -36,21 +36,79 @@ def cmd_build(args):
 
 
 def cmd_query(args):
+    import sqlite3
+
     from icarus.core.query import IcarusQuery
-    with IcarusQuery(args.database) as q:
-        if args.search:
-            result = q.search(args.search, table=args.table)
-        elif args.sql:
-            result = q.execute(args.sql)
-        elif args.stats:
-            stats = q.stats()
-            for table, count in stats.items():
-                print(f"{table}: {count:,}")
-            return
-        else:
-            print("Specify --sql, --search, or --stats", file=sys.stderr)
-            sys.exit(1)
-        print(result.to_markdown())
+
+    # The default query connection is READ-ONLY (mode=ro + PRAGMA query_only).
+    # Any attempt to mutate the database through --sql surfaces here as an
+    # OperationalError whose message names the read-only barrier; report it as
+    # a clear, actionable error instead of a traceback, and steer the user to
+    # the explicit `icarus exec` command.
+    try:
+        with IcarusQuery(args.database) as q:
+            if args.search:
+                result = q.search(args.search, table=args.table)
+            elif args.sql:
+                result = q.execute(args.sql)
+            elif args.stats:
+                stats = q.stats()
+                for table, count in stats.items():
+                    print(f"{table}: {count:,}")
+                return
+            else:
+                print("Specify --sql, --search, or --stats", file=sys.stderr)
+                sys.exit(1)
+            print(result.to_markdown())
+    except sqlite3.OperationalError as e:
+        msg = str(e).lower()
+        if any(tok in msg for tok in ("readonly", "read-only", "query_only")):
+            print(
+                "ERROR: query is read-only; use `icarus exec <database> --sql \"...\"` "
+                "to modify a database",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Other operational errors (e.g. malformed SQL, no such table) — report
+        # cleanly rather than dumping a traceback.
+        print(f"ERROR: query failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    except sqlite3.DatabaseError as e:
+        # A corrupt / unreadable / non-SQLite file. Report cleanly, no traceback.
+        print(
+            f"ERROR: could not read database {args.database!r}: {e} "
+            "(is it a valid ICARUS database?)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def cmd_exec(args):
+    """Explicit mutation path — opens the database READ-WRITE and commits.
+
+    Kept deliberately separate from `query` (which is read-only) so that any
+    write to an ICARUS database is an unmistakable, opted-into action.
+    """
+    import sqlite3
+
+    from icarus.core.query import IcarusQuery
+
+    print(
+        f"NOTICE: opening {args.database!r} READ-WRITE — this will MODIFY the database.",
+        file=sys.stderr,
+    )
+    try:
+        with IcarusQuery(args.database, writable=True) as q:
+            cursor = q.conn.execute(args.sql)
+            affected = cursor.rowcount
+            q.commit()
+    except sqlite3.DatabaseError as e:
+        print(f"ERROR: exec failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    if affected < 0:
+        print("Statement executed (rows affected: not reported for this statement).")
+    else:
+        print(f"Statement executed. Rows affected: {affected}.")
 
 
 def cmd_diff(args):
@@ -143,7 +201,7 @@ def cmd_resolve(args):
             if not src_path.exists():
                 print(f"ERROR: Source database does not exist: {src_path}", file=sys.stderr)
                 sys.exit(1)
-            src_conn = open_db(src_path, readonly=True)
+            src_conn = open_db(src_path, readonly=True, immutable=True)
             try:
                 now = datetime.now(timezone.utc).isoformat()
                 run_id = f"resolve-{i}-{src_path.name}"
@@ -225,6 +283,13 @@ def main():
     query_p.add_argument("--table", default="files", help="Table for FTS search (default: files)")
     query_p.add_argument("--stats", action="store_true", help="Show table row counts")
 
+    # exec (explicit read-WRITE mutation path; `query` is read-only)
+    exec_p = sub.add_parser(
+        "exec",
+        help="Execute a write statement against a database (READ-WRITE; commits)")
+    exec_p.add_argument("database", help="Path to ICARUS database to modify")
+    exec_p.add_argument("--sql", required=True, help="SQL statement to execute and commit")
+
     # diff
     diff_p = sub.add_parser("diff", help="Compare two intelligence databases")
     diff_p.add_argument("old", help="Path to older database")
@@ -266,7 +331,7 @@ def main():
         sys.exit(1)
 
     try:
-        {"build": cmd_build, "query": cmd_query, "diff": cmd_diff,
+        {"build": cmd_build, "query": cmd_query, "exec": cmd_exec, "diff": cmd_diff,
          "parser": cmd_parser, "resolve": cmd_resolve}[args.command](args)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)

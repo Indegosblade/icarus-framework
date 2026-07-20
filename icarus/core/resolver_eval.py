@@ -766,7 +766,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         eval_conn = open_db(eval_path)
-        src_conn = open_db(source_db, readonly=True)
+        src_conn = open_db(source_db, readonly=True, immutable=True)
         try:
             base_version_id = _insert_version(eval_conn, "eval-base")
             counts = atomize_db(src_conn, eval_conn, base_version_id, [entity_type])

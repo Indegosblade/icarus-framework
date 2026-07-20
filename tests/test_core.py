@@ -1553,9 +1553,15 @@ def test_initialize_database_migration_path_leaves_fk_enforceable(tmp_db):
 
 
 def test_open_db_readonly_is_immutable_with_no_side_effects(tmp_db):
-    """open_db(readonly=True): reads work, writes are rejected, and no
-    -wal/-shm sidecar files get created -- mirrors the differ's read-only
-    open pattern for untrusted/read-only use (finding #225).
+    """open_db(readonly=True, immutable=True): reads work, writes are rejected,
+    and no -wal/-shm sidecar files get created -- mirrors the differ's
+    read-only open pattern for untrusted/read-only use (finding #225).
+
+    Note (D1, #34): the no-sidecar guarantee is the ``immutable=1`` behaviour,
+    now behind the explicit ``immutable=True`` flag. Plain ``readonly=True``
+    (used by the query engine) is ``mode=ro`` and deliberately HONOURS the WAL
+    so a freshly-built database reads current data -- so it may create sidecars
+    and is covered separately by test_open_db_readonly_without_immutable_*.
     """
     from icarus.core.schema import initialize_database, open_db
 
@@ -1568,7 +1574,7 @@ def test_open_db_readonly_is_immutable_with_no_side_effects(tmp_db):
     conn.commit()
     conn.close()
 
-    ro = open_db(tmp_db, readonly=True)
+    ro = open_db(tmp_db, readonly=True, immutable=True)
     try:
         assert ro.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
         assert ro.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -1582,3 +1588,33 @@ def test_open_db_readonly_is_immutable_with_no_side_effects(tmp_db):
 
     assert not Path(str(tmp_db) + "-wal").exists()
     assert not Path(str(tmp_db) + "-shm").exists()
+
+
+def test_open_db_readonly_without_immutable_rejects_writes_but_honours_wal(tmp_db):
+    """Plain open_db(readonly=True) (mode=ro, no immutable) — the query
+    engine's mode (D1, #34): reads reflect data committed via the WAL and every
+    write is still rejected. Unlike immutable, it does NOT promise no sidecars,
+    because it must read a freshly-built (WAL-mode) database's current rows.
+    """
+    from icarus.core.schema import initialize_database, open_db
+
+    initialize_database(tmp_db)  # open_db() puts the DB in persistent WAL mode
+    w = open_db(tmp_db)
+    w.execute(
+        "INSERT INTO files (path, filename, extension, size, file_type) "
+        "VALUES ('/bin/a', 'a', '', 1, 'binary')"
+    )
+    w.commit()
+    w.close()
+
+    ro = open_db(tmp_db, readonly=True)
+    try:
+        # WAL-committed row is visible (would be missing/stale under immutable).
+        assert ro.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 1
+        with pytest.raises(sqlite3.OperationalError):
+            ro.execute(
+                "INSERT INTO files (path, filename, extension, size, file_type) "
+                "VALUES ('/bin/b', 'b', '', 1, 'binary')"
+            )
+    finally:
+        ro.close()

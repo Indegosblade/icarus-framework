@@ -115,7 +115,9 @@ def _apply_performance_pragmas(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA mmap_size = {FALLBACK_MMAP_BYTES}")
 
 
-def open_db(path: Union[str, Path], *, readonly: bool = False) -> sqlite3.Connection:
+def open_db(
+    path: Union[str, Path], *, readonly: bool = False, immutable: bool = False
+) -> sqlite3.Connection:
     """
     Open a SQLite connection with durable, safe per-connection state applied
     immediately. This is the one place core/parser code should go through
@@ -133,11 +135,22 @@ def open_db(path: Union[str, Path], *, readonly: bool = False) -> sqlite3.Connec
     available RAM on every working connection, not just a connection that's
     about to be closed.
 
-    Pass ``readonly=True`` to open the database immutably via URI (no
-    writes, no -wal/-shm side files created) for untrusted or read-only use.
+    Pass ``readonly=True`` to open the database read-only via URI (``mode=ro``:
+    no writes to the main file, no -wal/-shm side files created).
+
+    Pass ``immutable=True`` (only meaningful with ``readonly=True``) to also
+    add ``immutable=1``, which promises SQLite the file cannot change and lets
+    it skip all locking. Use this ONLY for genuinely untrusted/frozen inputs:
+    ``immutable=1`` makes SQLite IGNORE the ``-wal`` file, so a freshly-built
+    database whose latest writes still live in the WAL would read stale or
+    missing rows. The interactive query path must therefore use
+    ``readonly=True`` WITHOUT ``immutable`` so it honours the WAL.
     """
     if readonly:
-        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+        uri = f"file:{path}?mode=ro"
+        if immutable:
+            uri += "&immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
     else:
         conn = sqlite3.connect(str(path))
         conn.execute("PRAGMA journal_mode = WAL")
