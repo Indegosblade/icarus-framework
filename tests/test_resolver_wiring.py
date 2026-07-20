@@ -18,6 +18,8 @@ import argparse
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from icarus.__main__ import cmd_resolve
 from icarus.core.pipeline import create_default_pipeline
 from icarus.core.schema import initialize_database
@@ -100,6 +102,75 @@ def test_cmd_resolve_merges_matching_binary_across_sources(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM match_candidates").fetchone()[0] >= 1
     finally:
         conn.close()
+
+
+def test_cmd_resolve_rejects_threshold_above_one(tmp_path, capsys):
+    """#30: --threshold documents [0, 1] but out-of-range values were
+    accepted silently. Must now exit non-zero with a clear message and
+    never touch the output database."""
+    src_a = tmp_path / "src_a.db"
+    src_b = tmp_path / "src_b.db"
+    _make_source_db(src_a, "run-a", "shared_bin", "deadbeef")
+    _make_source_db(src_b, "run-b", "shared_bin", "deadbeef")
+    out_path = tmp_path / "out.db"
+
+    ns = argparse.Namespace(
+        out=str(out_path),
+        entity_type="binaries",
+        sources=[str(src_a), str(src_b)],
+        threshold=1.5,
+        atomize_only=False,
+    )
+    try:
+        cmd_resolve(ns)
+        raised = False
+    except SystemExit as exc:
+        raised = True
+        assert exc.code != 0
+
+    assert raised, "cmd_resolve accepted an out-of-range --threshold"
+    assert "threshold" in capsys.readouterr().err.lower()
+    assert not out_path.exists()
+
+
+def test_cmd_resolve_rejects_negative_threshold(tmp_path, capsys):
+    src_a = tmp_path / "src_a.db"
+    src_b = tmp_path / "src_b.db"
+    _make_source_db(src_a, "run-a", "shared_bin", "deadbeef")
+    _make_source_db(src_b, "run-b", "shared_bin", "deadbeef")
+    out_path = tmp_path / "out.db"
+
+    ns = argparse.Namespace(
+        out=str(out_path),
+        entity_type="binaries",
+        sources=[str(src_a), str(src_b)],
+        threshold=-0.1,
+        atomize_only=False,
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_resolve(ns)
+    assert exc_info.value.code != 0
+    assert "threshold" in capsys.readouterr().err.lower()
+
+
+def test_cmd_resolve_accepts_threshold_boundaries(tmp_path):
+    """0.0 and 1.0 are valid boundary values, not rejected."""
+    src_a = tmp_path / "src_a.db"
+    src_b = tmp_path / "src_b.db"
+    _make_source_db(src_a, "run-a", "shared_bin", "deadbeef")
+    _make_source_db(src_b, "run-b", "shared_bin", "deadbeef")
+
+    for boundary in (0.0, 1.0):
+        out_path = tmp_path / f"out_{boundary}.db"
+        ns = argparse.Namespace(
+            out=str(out_path),
+            entity_type="binaries",
+            sources=[str(src_a), str(src_b)],
+            threshold=boundary,
+            atomize_only=True,
+        )
+        cmd_resolve(ns)
+        assert out_path.exists()
 
 
 def test_cmd_resolve_atomize_only_skips_resolution(tmp_path):

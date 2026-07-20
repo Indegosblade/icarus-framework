@@ -14,6 +14,7 @@ consumes:
   - "application/octet-stream"
 produces:
   entity_types: ["files"]
+  event_types: ["binary_entropy"]
 dependencies:
   tools: []
   python: []

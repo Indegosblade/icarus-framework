@@ -250,6 +250,13 @@ def cmd_resolve(args):
     from icarus.core.resolver import EntityResolver
     from icarus.core.schema import initialize_database, open_db
 
+    if not 0.0 <= args.threshold <= 1.0:
+        print(
+            f"ERROR: --threshold must be in [0, 1], got {args.threshold}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     entity_types = None if args.entity_type == "all" else [args.entity_type]
 
     out_path = Path(args.out)
