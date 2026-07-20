@@ -37,7 +37,7 @@ green legacy suite.
       families. *(#43 — **#62 merged**)*
 - [x] FIFO/special files, non-UTF-8 names, deeply-nested JSON, and compression bombs are
       skipped-with-warning, not hang/abort/unbounded. *(#47 — **#62 merged**; residual: #25)*
-- [ ] Diff report escapes hostile values. *(#35)*
+- [x] Diff report escapes hostile values. *(#35 — **#70 merged**; `_md_sanitize` defuses backticks/pipes/control chars)*
 
 ### Sanitization (confidentiality)
 - [x] The sanitizer actually removes credentials/secrets (HYGEIA canonical + fail-closed
