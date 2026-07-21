@@ -10,25 +10,38 @@ diverged during early development. The project is moving forward monotonically; 
 
 ## [Unreleased]
 
-Public-release readiness remediation toward the first public beta (`4.0.0b1`). Tracked
-in `docs/public-release-audit/`.
+Public-release readiness remediation toward the first public beta (`4.0.0b1`).
 
 ### Added
-- `SECURITY.md`, `CONTRIBUTING.md`, and this `CHANGELOG.md` (public-project posture).
+- `SECURITY.md`, `CONTRIBUTING.md`, and this `CHANGELOG.md` (public-project posture),
+  plus a threat model (`docs/THREAT_MODEL.md`).
 - Hostile-filesystem-input hardening and regression suite: in-root symlinks are
   cataloged but never dereferenced or traversed; FIFOs, non-UTF-8 names, deeply nested
   JSON, and compression bombs are skipped-with-warning rather than hanging or crashing
   (#43, #47).
 - Credential detection in sanitization and a mandatory post-sanitize verification gate.
+- `query --allow-unverified` to inspect a database whose sanitization failed (#77).
 
 ### Changed
 - Maturity classifier corrected from `Production/Stable` to `Beta`; README states the
   Beta, source-available (non-OSI) posture explicitly.
 - HYGEIA is now the canonical sanitizer and **fails closed** if it cannot load; findings
   record only a non-reversible fingerprint and location, never the raw secret (#41).
+- Sanitization redaction is **column-scoped**: value-content patterns apply only to
+  free-text/value columns, so structural path/filename data (version strings, GUID
+  filenames) is neither corrupted nor treated as a false residual that aborts the build.
+  A sanitizing build now completes on a real filesystem (#76).
+- `query` is read-only by default; a database whose sanitization failed is stamped and
+  refused unless `--allow-unverified` (#77). Auto-detect no longer full-walks a source
+  just to choose a parser (#78).
 - Packaging ships parser manifests, JSON Schema, and catalogs in built distributions
   (#37); foreign keys are enforced on every write path (#44); a future/malformed schema
   version is refused instead of silently relabeled (#39).
+
+### Repository
+- Merges are squash-only with automatic branch deletion; `main` is branch-protected
+  (required CI checks, no force-push). Dependabot version-update PRs are disabled.
+  `.mailmap` normalizes the author identity.
 
 ## [1.4.0] - 2026-07-03
 - Experimental cross-build entity resolution (`icarus resolve`, `icarus build --resolve`).

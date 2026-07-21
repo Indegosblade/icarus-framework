@@ -267,7 +267,7 @@ See [about/ARCHITECTURE.md](about/ARCHITECTURE.md) for design decisions and exte
 pytest tests/ -x -q
 ```
 
-208 tests across 16 modules covering schema, queries, diffing, pipeline, entity resolution (the atomizer, similarity scoring/blocking, scored resolution, and CLI/pipeline wiring), observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, STIX export, the top-level public API, and the production-audit backlog remediation (differ/schema/resolver/HYGEIA/harness regressions).
+325 tests across 31 modules covering schema, queries, diffing, pipeline, entity resolution (the atomizer, similarity scoring/blocking, scored resolution, and CLI/pipeline wiring), observations, parsers, manifests, registry, test harness, generic fallbacks, CloudTrail, the macOS/iOS daemon parser, STIX export, HYGEIA sanitization (column-scoped redaction and the fail-closed post-gate), the read-only query barrier, hostile-input safety, provenance, and the top-level public API.
 
 CI runs the full test matrix on every push:
 
@@ -362,7 +362,7 @@ icarus-framework/
 │   └── integrations/
 │       ├── hygeia.py             PII sanitization
 │       └── stix_export.py        STIX 2.1 export
-├── tests/                        208 tests
+├── tests/                        325 tests
 ├── examples/                     Custom parser template
 ├── schema/                       Standalone SQL reference
 ├── about/                        Architecture and parser docs
@@ -387,11 +387,42 @@ icarus-framework/
 | [wiki/Parser-Ecosystem.md](wiki/Parser-Ecosystem.md) | Manifests, registry, test harness, quality tiers |
 | [wiki/STIX-Export.md](wiki/STIX-Export.md) | STIX 2.1 mapping, custom extensions, bundle format |
 | [wiki/Validation-Results.md](wiki/Validation-Results.md) | Test run data from real pipeline executions |
+| [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Trust boundaries, assumptions, and what sanitization does and does not guarantee |
+| [SECURITY.md](SECURITY.md) | Supported versions and how to report a vulnerability |
 | [docs/PRODUCTION_AUDIT.md](docs/PRODUCTION_AUDIT.md) | Multi-agent production-readiness audit — findings, fixes, backlog |
 
 ---
 
 ## Changelog
+
+### 4.0.0b1 (2026-07) — Public beta: correctness, safety, and packaging hardening
+
+The first public, source-available beta. A end-to-end audit and remediation pass
+made the framework's guarantees true on real data rather than on fixtures. Highlights:
+
+- **Sanitization is real and fail-closed.** HYGEIA is wired as the canonical engine
+  (previously imported but never invoked); a mandatory post-sanitize gate refuses to
+  bless output that still contains a residual, and redaction is **column-scoped** so
+  value-content patterns (email/IP/etc.) apply only to free-text columns and never
+  corrupt or false-abort on structural path/filename data. Verified on a real
+  filesystem, not just fixtures.
+- **Read-only by default.** `query` opens read-only (`mode=ro` + `PRAGMA query_only`);
+  writes require the explicit `exec` command. A failed sanitization is marked and
+  `query` refuses it unless `--allow-unverified`.
+- **Atomic, honest builds.** `--fresh` builds into a temp file and swaps on full
+  success only; an existing output is refused rather than silently unioned; resume
+  requires an exact source/parser/config fingerprint match.
+- **Correct output.** Cross-database diffs use natural keys (not local row ids);
+  every entity row carries provenance (`source_version_id` + `observed_time`); STIX
+  2.1 export validates under strict `stix2.parse` with no dangling refs; diff reports
+  neutralize hostile values.
+- **Hostile-input safety.** In-root symlinks are cataloged, never dereferenced;
+  FIFOs/special files, non-UTF-8 names, deeply nested JSON, and compression bombs are
+  skipped-with-warning; file hashing is size-capped.
+- **Packaging & CI.** Wheel/sdist ship every parser manifest, JSON Schema, and
+  catalog; CI builds and smoke-tests the installed wheel across a 3-OS × 4-Python
+  matrix with pinned, Dependabot-free actions, `pip-audit`, and a read-only token.
+  The experimental entity resolver is excluded from the beta stability promise.
 
 ### v1.4.0 (2026-07-03) — Real entity resolution (block → score → cluster → merge)
 
