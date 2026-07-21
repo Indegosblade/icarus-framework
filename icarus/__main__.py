@@ -100,6 +100,23 @@ def cmd_query(args):
     import sqlite3
 
     from icarus.core.query import IcarusQuery
+    from icarus.integrations.hygeia import sanitization_status
+
+    # Refuse to consume a database whose sanitization FAILED — it holds
+    # partially-processed, unverified data and is not safe to query or share
+    # (#77). A verified or --skip-hygeia database queries normally.
+    if (
+        Path(args.database).exists()
+        and not getattr(args, "allow_unverified", False)
+        and sanitization_status(args.database) == "failed"
+    ):
+        print(
+            "ERROR: this database's sanitization FAILED — it is not safe to "
+            "query or share. Rebuild it (icarus build --fresh), or pass "
+            "--allow-unverified to inspect it anyway.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
 
     # The default query connection is READ-ONLY (mode=ro + PRAGMA query_only).
     # Any attempt to mutate the database through --sql surfaces here as an
@@ -350,6 +367,10 @@ def main():
     query_p.add_argument("--search", help="Full-text search query")
     query_p.add_argument("--table", default="files", help="Table for FTS search (default: files)")
     query_p.add_argument("--stats", action="store_true", help="Show table row counts")
+    query_p.add_argument(
+        "--allow-unverified", action="store_true",
+        help="Query even if the database failed sanitization or is unmarked "
+             "(unsafe; output may contain unsanitized data)")
 
     # exec (explicit read-WRITE mutation path; `query` is read-only)
     exec_p = sub.add_parser(

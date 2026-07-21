@@ -225,3 +225,43 @@ def test_corrupt_database_clean_exit(tmp_path, capsys):
     err = capsys.readouterr().err
     assert "ERROR" in err
     assert "Traceback" not in err
+
+
+# ── #77: query refuses a database whose sanitization FAILED ──────────────────
+
+def test_query_refuses_sanitization_failed_database(tmp_path, capsys):
+    from icarus.integrations.hygeia import mark_sanitization_failed
+
+    db = _make_db(tmp_path)
+    mark_sanitization_failed(db)  # stamp FAILED, as a failed sanitize phase now does
+
+    args = _query_args(db, sql="SELECT path FROM files")
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_query(args)
+    assert exc.value.code == 3
+    out = capsys.readouterr()
+    assert "FAILED" in out.err and "not safe" in out.err
+    assert "/seed" not in out.out  # the unsanitized row was never emitted
+
+
+def test_allow_unverified_queries_a_failed_database(tmp_path, capsys):
+    from icarus.integrations.hygeia import mark_sanitization_failed
+
+    db = _make_db(tmp_path)
+    mark_sanitization_failed(db)
+
+    args = _query_args(db, sql="SELECT path FROM files", allow_unverified=True)
+    cli.cmd_query(args)
+    assert "/seed" in capsys.readouterr().out
+
+
+def test_query_allows_verified_and_skipped_databases(tmp_path, capsys):
+    db = _make_db(tmp_path)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('hygeia_status', 'verified')"
+    )
+    conn.commit()
+    conn.close()
+    cli.cmd_query(_query_args(db, stats=True))
+    assert capsys.readouterr().err == ""  # verified: no gate, no noise
