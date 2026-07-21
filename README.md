@@ -188,6 +188,39 @@ Every candidate pair considered — not just the ones that merge — is persiste
 
 ## Parsers
 
+Parsers are the extension point — and the only source-specific code in the framework.
+Everything *downstream* of a parser (the normalized schema, full-text search, the
+cross-version differ, entity resolution, STIX 2.1 export, and the fail-closed
+sanitizer) is schema-driven and knows nothing about where the data came from. That is
+the whole design, and it means:
+
+> **Write one parser that emits entities into the tables, and you inherit the entire
+> engine for free.**
+
+The rows a parser inserts are — with no additional code — immediately full-text
+searchable (FTS5), diffable across versions, exportable to STIX, and run through
+sanitization. Emit temporal `observations` and you get time-diffing on them; add a
+one-line atom projection ([`icarus/core/atomize.py`](icarus/core/atomize.py)) for your
+entity type and **cross-source resolution** ("the same binary across two different
+dumps") lights up too. The code you write is small; the machine you plug into is not.
+
+Parsers are first-class to write — and to keep private:
+
+- **In-repo** — a `BaseParser` subclass plus a YAML manifest under `icarus/parsers/`.
+  Auto-discovery registers it at import; there is no parser list to maintain.
+- **Private** — the gitignored `icarus/parsers/private/` package registers and runs
+  *exactly* like a shipped parser, but never touches git. Sensitive, client-specific,
+  or otherwise-not-for-public parsers stay yours; the public tree stays clean.
+- **Distributed** — an installed package can advertise its own parsers through the
+  `icarus.parsers` entry-point group.
+
+A 4-gate test harness (golden output, idempotency, schema conformance, zero-PII) is the
+bar for production tier, and a manifest's `specificity` slots your parser into the
+auto-detection contest automatically. See [about/PARSERS.md](about/PARSERS.md) for the
+full development guide.
+
+### Built-in parsers
+
 9 parsers — 8 production, 1 candidate. Auto-detection runs each parser's `identify()` method against the source; the most specific match (lowest specificity number) wins.
 
 | Parser | Tier | Spec | Description |

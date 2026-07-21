@@ -2,6 +2,49 @@
 
 The parser ecosystem manages, validates, and tests parsers at scale.
 
+## Why the parser is the extension point
+
+A parser is the **only** source-specific code in ICARUS. Everything downstream of it —
+the normalized schema, FTS5 search, the cross-version differ, entity resolution, STIX
+2.1 export, and the fail-closed HYGEIA sanitizer — is schema-driven and source-agnostic.
+Write a parser that emits rows into the entity tables and you inherit all of it for
+free. That is the leverage, and it is the reason the parser is where the interesting
+work lives.
+
+**What a parser's output gets, with zero additional code:**
+
+| You emit… | You get for free |
+|-----------|------------------|
+| Rows in any entity table (`files`, `binaries`, `daemons`, …) | Full-text search (FTS5), STIX export, sanitization, and structural/natural-key diffing across versions |
+| Temporal `observations` (event rows with a subject + `event_type` + JSON payload) | Time-diffing via `observation_diff` — "what events appeared/changed since the last run" |
+| An entity type registered in `ATOM_PROJECTIONS` (a few lines of declarative SQL) | **Cross-source resolution** — the resolver clusters "the same entity across two different builds" into one canonical identity |
+
+So a new capability is, at minimum, one parser (source-specific), plus optionally one
+atom projection (to make a new entity type resolvable). The amount of engine you plug
+into dwarfs the amount of code you write.
+
+**"If done right"** means modeling the source into entities, relationships, and
+observations — not just dumping file rows. A parser that only lists files gets search
+and diffing; a parser that models *what the source actually is* lights up resolution
+and temporal analysis on data whose shape you defined minutes ago.
+
+## Building your own
+
+Parsers are first-class to author and, crucially, to keep private:
+
+- **In-repo** — a `BaseParser` subclass + co-located YAML manifest under
+  `icarus/parsers/`. Auto-discovery registers it at import; nothing to add to a list.
+- **Private (gitignored)** — anything under `icarus/parsers/private/` registers and runs
+  identically to a shipped parser but never enters git. Sensitive, client-specific, or
+  otherwise-not-for-the-public-tree parsers stay entirely yours.
+- **Distributed** — an installed package advertises parsers via the `icarus.parsers`
+  entry-point group, so a third-party distribution can extend a user's ICARUS without
+  touching this repo.
+
+Give your manifest a `specificity` and the detection contest slots it in automatically
+(see below); pass the 4-gate harness and it earns production tier. Full walkthrough:
+[about/PARSERS.md](../about/PARSERS.md).
+
 ## Components
 
 ### 1. YAML Manifests
