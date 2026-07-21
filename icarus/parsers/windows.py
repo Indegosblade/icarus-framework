@@ -17,6 +17,12 @@ from icarus.parsers.base import BATCH_COMMIT_INTERVAL, BaseParser
 
 PE_MAGIC = b"MZ"
 PE_ARCH = {0x8664: "x86_64", 0x14C: "x86", 0xAA64: "arm64"}
+
+# Bounds for the auto-detect probe (identify()) so it never full-walks a large
+# or slow source just to answer yes/no. A real Windows tree carries .exe/.dll
+# within this sample; extraction (not detection) does the full walk.
+_IDENTIFY_FILE_BUDGET = 5000
+_IDENTIFY_DIR_BUDGET = 1000
 FILE_TYPES = {
     ".exe": "binary", ".dll": "dylib", ".sys": "driver",
     ".json": "config", ".xml": "config", ".ini": "config",
@@ -37,12 +43,27 @@ class WindowsParser(BaseParser):
         return "Windows application directory or filesystem tree"
 
     def identify(self, source: Path) -> bool:
+        # Auto-detection must not pay a full tree walk just to answer yes/no:
+        # during `build` without -p, each candidate parser's identify() runs in
+        # turn, so an unbounded walk here can dwarf extraction on a large or slow
+        # source (#78). Bound the probe — inspect at most _IDENTIFY_FILE_BUDGET
+        # files across at most _IDENTIFY_DIR_BUDGET directories (os.walk is
+        # top-down, so shallow locations are checked first) and answer from that
+        # sample. A real Windows tree carries .exe/.dll near the top.
         if not source.is_dir():
             return False
-        for dirpath, _, filenames in os.walk(source, onerror=lambda e: None):
+        files_seen = 0
+        dirs_seen = 0
+        for _dirpath, _, filenames in os.walk(source, onerror=lambda e: None):
+            dirs_seen += 1
             for fname in filenames:
                 if fname.lower().endswith((".exe", ".dll")):
                     return True
+                files_seen += 1
+                if files_seen >= _IDENTIFY_FILE_BUDGET:
+                    return False
+            if dirs_seen >= _IDENTIFY_DIR_BUDGET:
+                return False
         return False
 
     def extract_entities(self, source: Path, db_path: Path) -> Dict[str, Any]:

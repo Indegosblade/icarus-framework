@@ -260,3 +260,51 @@ def test_windows_pe_dll_still_recorded_as_framework(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM frameworks").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+# ── #78 — identify() bounds its auto-detect probe, never full-walks ──
+
+
+def test_windows_identify_true_when_pe_present(tmp_path):
+    from icarus.parsers.windows import WindowsParser
+
+    root = tmp_path / "app"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "tool.exe").write_bytes(b"MZ")
+    assert WindowsParser().identify(root) is True
+
+
+def test_windows_identify_false_without_pe(tmp_path):
+    from icarus.parsers.windows import WindowsParser
+
+    root = tmp_path / "docs"
+    root.mkdir()
+    for i in range(20):
+        (root / f"note{i}.txt").write_text("x")
+    assert WindowsParser().identify(root) is False
+
+
+def test_windows_identify_is_bounded(tmp_path, monkeypatch):
+    """The probe stops after its file budget instead of walking the whole tree
+    — a .exe in a deeper directory reached only after the budget is exhausted is
+    not seen (documents the detection trade-off; extraction still walks
+    everything). The PE lives in a subdirectory so the outcome does not depend
+    on within-directory enumeration order (which differs by filesystem)."""
+    from icarus.parsers import windows as win
+
+    root = tmp_path / "big"
+    (root / "sub").mkdir(parents=True)
+    for i in range(50):  # 50 non-PE files in the top dir — exceeds the budget
+        (root / f"f{i}.txt").write_text("x")
+    (root / "sub" / "deep.exe").write_bytes(b"MZ")  # PE only in the subdirectory
+
+    # Budget (10) is exhausted within the top dir, before os.walk descends into
+    # the subdir that holds the .exe — deterministic regardless of file order.
+    monkeypatch.setattr(win, "_IDENTIFY_FILE_BUDGET", 10)
+    monkeypatch.setattr(win, "_IDENTIFY_DIR_BUDGET", 1)
+    assert win.WindowsParser().identify(root) is False
+
+    # Raise the budgets above the tree size and the same tree now detects.
+    monkeypatch.setattr(win, "_IDENTIFY_FILE_BUDGET", 5000)
+    monkeypatch.setattr(win, "_IDENTIFY_DIR_BUDGET", 1000)
+    assert win.WindowsParser().identify(root) is True
