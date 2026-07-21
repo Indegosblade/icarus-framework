@@ -286,22 +286,25 @@ def test_windows_identify_false_without_pe(tmp_path):
 
 def test_windows_identify_is_bounded(tmp_path, monkeypatch):
     """The probe stops after its file budget instead of walking the whole tree
-    — a .exe past the budget is not reached (documents the detection trade-off;
-    extraction still walks everything)."""
+    — a .exe in a deeper directory reached only after the budget is exhausted is
+    not seen (documents the detection trade-off; extraction still walks
+    everything). The PE lives in a subdirectory so the outcome does not depend
+    on within-directory enumeration order (which differs by filesystem)."""
     from icarus.parsers import windows as win
 
+    root = tmp_path / "big"
+    (root / "sub").mkdir(parents=True)
+    for i in range(50):  # 50 non-PE files in the top dir — exceeds the budget
+        (root / f"f{i}.txt").write_text("x")
+    (root / "sub" / "deep.exe").write_bytes(b"MZ")  # PE only in the subdirectory
+
+    # Budget (10) is exhausted within the top dir, before os.walk descends into
+    # the subdir that holds the .exe — deterministic regardless of file order.
     monkeypatch.setattr(win, "_IDENTIFY_FILE_BUDGET", 10)
     monkeypatch.setattr(win, "_IDENTIFY_DIR_BUDGET", 1)
-
-    root = tmp_path / "big"
-    root.mkdir()
-    for i in range(50):  # 50 non-PE files > budget of 10
-        (root / f"f{i}.txt").write_text("x")
-    (root / "deep.exe").write_bytes(b"MZ")  # PE exists but past the file budget
-
-    # Bounded: returns False without inspecting the .exe beyond the budget.
     assert win.WindowsParser().identify(root) is False
 
-    # Raise the budget above the file count and the same tree now detects.
+    # Raise the budgets above the tree size and the same tree now detects.
     monkeypatch.setattr(win, "_IDENTIFY_FILE_BUDGET", 5000)
+    monkeypatch.setattr(win, "_IDENTIFY_DIR_BUDGET", 1000)
     assert win.WindowsParser().identify(root) is True
