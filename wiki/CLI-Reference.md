@@ -30,19 +30,22 @@ icarus build -s /usr -o linux.db --parser linux --fresh
 
 ## `icarus query`
 
-Query an intelligence database.
+Query an intelligence database. **`query` is read-only** — the connection opens
+`mode=ro` with `PRAGMA query_only = ON`, so a write statement passed to `--sql` is
+refused (exit code 2) and steered to `icarus exec`. Use `exec` for writes.
 
 ```bash
-icarus query DATABASE [--sql QUERY] [--search TERMS] [--table TABLE] [--stats]
+icarus query DATABASE [--sql QUERY] [--search TERMS] [--table TABLE] [--stats] [--allow-unverified]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `DATABASE` | Path to ICARUS database (positional) |
-| `--sql` | Raw SQL query |
+| `--sql` | Raw SQL query (read-only) |
 | `--search` | Full-text search query (FTS5) |
 | `--table` | Table for FTS search (default: files) |
 | `--stats` | Show table row counts |
+| `--allow-unverified` | Query a database whose sanitization **failed**. By default such a database is refused (exit code 3) because it may contain unsanitized data; a verified or `--skip-hygeia` database queries normally. |
 
 **Examples:**
 ```bash
@@ -50,6 +53,28 @@ icarus query intel.db --stats
 icarus query intel.db --search "nginx"
 icarus query intel.db --search "systemd" --table daemons
 icarus query intel.db --sql "SELECT path, size FROM files WHERE size > 100000000 ORDER BY size DESC LIMIT 20"
+```
+
+---
+
+## `icarus exec`
+
+Execute a write statement against a database (**read-write; commits**). This is the
+explicit mutation path — `query` cannot write. Opening a database with `exec` prints a
+notice that it will be modified.
+
+```bash
+icarus exec DATABASE --sql "STATEMENT"
+```
+
+| Flag | Description |
+|------|-------------|
+| `DATABASE` | Path to ICARUS database to modify (positional) |
+| `--sql` | SQL statement to execute and commit (required) |
+
+**Example:**
+```bash
+icarus exec intel.db --sql "UPDATE files SET marking = 'REVIEWED' WHERE path = '/etc/passwd'"
 ```
 
 ---
