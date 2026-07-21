@@ -479,6 +479,42 @@ def _rebuild_fts_indexes(db_path: Path) -> None:
         conn.close()
 
 
+def sanitization_status(db_path: Path) -> str:
+    """Classify a database's sanitization posture from its metadata markers.
+
+    Returns one of: ``verified`` (post-gate passed), ``skipped``
+    (built with --skip-hygeia — unsanitized by explicit choice), ``failed``
+    (sanitization ran but did not verify — not safe to share), or ``unknown``
+    (no completion marker: an incomplete/crashed build or a legacy database).
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return "unknown"
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return "unknown"
+    try:
+        rows = dict(
+            conn.execute(
+                "SELECT key, value FROM metadata WHERE key IN "
+                "('hygeia_status', 'hygeia_skipped')"
+            ).fetchall()
+        )
+    except sqlite3.Error:
+        return "unknown"
+    finally:
+        conn.close()
+    status = rows.get("hygeia_status", "") or ""
+    if status.startswith("FAILED"):
+        return "failed"
+    if status == "verified":
+        return "verified"
+    if rows.get("hygeia_skipped") == "true":
+        return "skipped"
+    return "unknown"
+
+
 def mark_sanitization_failed(db_path: Path) -> None:
     """Invalidate prior clean markers when a later mandatory gate fails."""
     conn = sqlite3.connect(str(db_path))
