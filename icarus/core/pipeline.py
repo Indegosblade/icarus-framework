@@ -378,6 +378,16 @@ class Pipeline:
                 self.save_checkpoint(i, "failed", {"error": str(e)})
                 self.context.errors.append((phase.name, str(e)))
                 print(f"[ICARUS] Phase {i} FAILED: {e}")
+                if phase.name == "sanitize":
+                    # A failed sanitize phase leaves partially-processed,
+                    # unverified data in the (non-atomic default-path) output.
+                    # Stamp it FAILED so `query` refuses it and resume re-runs
+                    # sanitization instead of trusting the file (#77).
+                    try:
+                        from icarus.integrations.hygeia import mark_sanitization_failed
+                        mark_sanitization_failed(self.output)
+                    except Exception:
+                        pass
                 raise
 
         self._finalize_version_record()

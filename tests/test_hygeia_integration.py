@@ -382,6 +382,53 @@ def test_unknown_table_gets_full_value_patterns(tmp_path):
     assert "203.0.113.9" not in body and "REDACTED_IP_V4" in body
 
 
+def test_sanitization_status_classifies_markers(tmp_path):
+    """#77: sanitization_status maps metadata markers to a posture."""
+    def _db(name, **markers):
+        p = tmp_path / name
+        initialize_database(p)
+        conn = sqlite3.connect(str(p))
+        for k, v in markers.items():
+            conn.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", (k, v))
+        conn.commit()
+        conn.close()
+        return p
+
+    assert hygeia_mod.sanitization_status(_db("v.db", hygeia_status="verified")) == "verified"
+    assert hygeia_mod.sanitization_status(_db("s.db", hygeia_skipped="true")) == "skipped"
+    failed = _db("f.db")
+    hygeia_mod.mark_sanitization_failed(failed)
+    assert hygeia_mod.sanitization_status(failed) == "failed"
+    assert hygeia_mod.sanitization_status(_db("u.db")) == "unknown"
+    assert hygeia_mod.sanitization_status(tmp_path / "missing.db") == "unknown"
+
+
+def test_failed_sanitize_phase_marks_database(tmp_path, monkeypatch):
+    """#77: when the sanitize PHASE raises on the default (non-atomic) path, the
+    output left on disk is stamped FAILED so `query` refuses it."""
+    from icarus.core.pipeline import create_default_pipeline
+
+    src = tmp_path / "src"
+    (src / "etc").mkdir(parents=True)
+    (src / "usr" / "bin").mkdir(parents=True)
+    (src / "lib" / "systemd" / "system").mkdir(parents=True)
+    (src / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    (src / "usr" / "bin" / "true").write_bytes(b"\x7fELF\x02\x01\x01\x00")
+    out = tmp_path / "out.db"
+
+    def boom(_db_path):
+        raise hygeia_mod.SanitizationError("forced residual")
+
+    monkeypatch.setattr(hygeia_mod, "sanitize_output", boom)
+
+    pipeline = create_default_pipeline(src, out, "linux")
+    with pytest.raises(hygeia_mod.SanitizationError):
+        pipeline.run(resume=True)
+
+    assert out.exists()  # default path is non-atomic; the file is left behind
+    assert hygeia_mod.sanitization_status(out) == "failed"
+
+
 def test_quote_ident_escapes_embedded_double_quotes():
     assert hygeia_mod._quote_ident("files") == '"files"'
     assert hygeia_mod._quote_ident('weird"name') == '"weird""name"'
